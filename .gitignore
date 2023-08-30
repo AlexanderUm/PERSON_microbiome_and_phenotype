@@ -1,0 +1,23 @@
+# Ignore R project files 
+.RData 
+.Rhistory 
+.Rproj.user/ 
+*.Rproj
+.RDataTmp
+
+# Rendered reports 
+*.html
+*.pdf
+*.pptx
+*.zip
+*.7z
+
+# Directories 
+data/
+out*/
+manuscript/
+.Rproj.user
+
+# Not relevant analysis
+*pathways.*
+*_test*

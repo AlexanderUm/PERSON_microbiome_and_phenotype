@@ -1,0 +1,826 @@
+---
+title: 'Tissue-specific insulin resistance is characterized distinct gut microbial profiles in a population with overweight or obesity'
+author: "A. Umanets"
+date: "`r date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+
+```{r , message=FALSE, warning=FALSE, prompt=FALSE, results='hide', echo=FALSE}
+#-------------------------------------------------------------------------------
+# Load libraries and set the environment 
+#-------------------------------------------------------------------------------
+set.seed(549794)
+
+# Load libraries 
+libs.list <- c("phyloseq", "tidyverse", "ggsignif", "broom", "vegan", "ANCOMBC",
+               "metagenomeSeq", "qiime2R", "picante", "phangorn", "FSA", "knitr")
+
+for (i in libs.list) {library(i, character.only = TRUE)}
+
+rm(list = c("i", "libs.list"))
+
+source("R/phy_shorten_tax_names.R")
+source("R/phy_taxa_filter.R")
+```
+
+
+```{r , message=FALSE, warning=FALSE, prompt=FALSE, results='hide', echo=FALSE}
+#-------------------------------------------------------------------------------
+# Read data/ Create phyloseq
+#-------------------------------------------------------------------------------
+ps1 <- qza_to_phyloseq(features = "data/seqdata/asv_table.qza", 
+                       tree = "data/seqdata/rooted-tree.qza", 
+                       taxonomy = "data/seqdata/taxonomy_07.qza")
+
+ps.meta <- data.frame(SeqID = sample_names(ps1), 
+                      Nreads = sample_sums(ps1))
+
+# Combine metadata
+# Control metadata
+cont.meta <- read.csv("data/metadata/control_metadata.csv") %>% 
+                mutate(SeqID = as.character(SeqID), 
+                       Center = "Control")
+
+# Samples metadata
+meta.d <- read.csv("data/metadata/phenotype_metadata.csv") %>%
+              full_join(., cont.meta) %>% 
+              mutate_at(all_of(c("Phenotype", "Center", "Sex")), as.factor)
+
+ps1.meta <- left_join(ps.meta, meta.d, by = "SeqID") %>% 
+              column_to_rownames("SeqID") %>% 
+              mutate(SeqID = rownames(.))
+
+# Add metadata
+sample_data(ps1) <- ps1.meta
+```
+
+
+```{r , message=FALSE, warning=FALSE, prompt=FALSE, results='hide', echo=FALSE}
+#-------------------------------------------------------------------------------
+# Initial ASV filtering 
+#-------------------------------------------------------------------------------
+# filter taxa with with less than 10 reads in total   
+ps1 <- prune_taxa(taxa_sums(ps1) > 10, ps1)
+
+# Remove ASVs: 
+# Kingdom: "d__Eukaryota", "Unassigned"
+# Genus: "Mitochondria"
+ps1 <- prune_taxa(!tax_table(ps1)[, "Genus"] %in% "Mitochondria", ps1)
+
+ps1 <- prune_taxa(!tax_table(ps1)[, "Genus"] %in% "Chloroplast", ps1)
+
+ps1 <- prune_taxa(!is.na(tax_table(ps1)[, "Phylum"])[, "Phylum"], ps1)
+
+ps1 <- prune_taxa(!tax_table(ps1)[, "Kingdom"] %in% c("d__Eukaryota", "Unassigned"), 
+                      ps1)
+
+# Change ASV IDs to shortened taxonomic names 
+taxa_names(ps1) <- make.unique(phy_shorten_tax_names(ps1))
+
+# Genus level 
+ps1.genus <- tax_glom(ps1, "Genus")
+
+taxa_names(ps1.genus) <- make.unique(phy_shorten_tax_names(ps1.genus))
+
+# Two groups phyloseqs
+ps1.2gr <- prune_samples(ps1@sam_data$Phenotype != "Control", ps1)
+
+ps1.genus.2gr <- prune_samples(ps1@sam_data$Phenotype != "Control", ps1.genus)
+
+# Write phyloseq
+dir.create("out/phyloseqs", recursive = TRUE)
+saveRDS(ps1, "out/phyloseqs/ps1.rds")
+saveRDS(ps1.genus, "out/phyloseqs/ps1_genus.rds")
+saveRDS(ps1.2gr, "out/phyloseqs/ps1_2gr.rds")
+saveRDS(ps1.genus.2gr, "out/phyloseqs/ps1_genus_2gr.rds")
+```
+
+
+```{r , message=FALSE, warning=FALSE, prompt=FALSE, results='hide', echo=FALSE}
+#-------------------------------------------------------------------------------
+# Color schema 
+#-------------------------------------------------------------------------------
+# Groups color
+col.gr <- RColorBrewer::brewer.pal(3, "Dark2")
+
+names(col.gr) <- levels(ps1.meta[, "Phenotype"])
+
+# Create a directory for figures
+dir.create("out/fig", showWarnings = FALSE, recursive = TRUE)
+```
+
+
+### 1. Diferences in alpha diversity between the groups
+
+```{r , message=FALSE, warning=FALSE, results='hide', echo=FALSE}
+#-------------------------------------------------------------------------------
+# Prepare data and calculate alpha diversity
+#-------------------------------------------------------------------------------
+# Rarefy samples count 
+ps1.rare <- rarefy_even_depth(ps1, rngseed = 4067937)
+
+# Calculate diversity indexes 
+alpha.df <- estimate_richness(physeq = ps1.rare, 
+                  measures = c("Observed", "Shannon", "InvSimpson"))
+
+# Calculate Phylogeny Diversity (package "picante")
+alpha.df$PhyloDiverity <- picante::pd(samp = t(otu_table(ps1.rare)), 
+                                       tree = phy_tree(ps1.rare), 
+                                       include.root = FALSE) |>
+                          dplyr::select("PD") |> 
+                          unlist()
+
+# Add relevant columns 
+alpha.df.long <- ps1.meta %>%
+                    dplyr::select(Phenotype) %>% 
+                    bind_cols(alpha.df)  %>% 
+                    gather(key = "Diversity_Index", 
+                           value = "Value", 
+                           -Phenotype) 
+
+
+################################################################################
+# Three groups 
+################################################################################
+#-------------------------------------------------------------------------------
+# Statistical comparison with KW test and Dunn test as post-hoc
+#-------------------------------------------------------------------------------
+res.kw.all <- NULL
+
+res.dunn.all <- NULL
+
+kw.formula <- paste0("Value ~ ", "Phenotype")
+
+for (i in unique(alpha.df.long[, "Diversity_Index"])) {
+  
+  res.kw <- alpha.df.long %>% 
+                filter(Diversity_Index == i) %>% 
+                kruskal.test(as.formula(kw.formula), .) %>% 
+                tidy() %>% 
+                mutate(Index = i)
+  
+  res.kw.all <- bind_rows(res.kw.all, res.kw)
+  
+  if (res.kw$p.value < 0.05) {
+    
+   res.dunn <- alpha.df.long %>% 
+                    filter(Diversity_Index == i) %>% 
+                    dunnTest(as.formula(kw.formula), .)
+   
+   res.dunn.all <- res.dunn$res %>% 
+                        mutate(Diversity_Index = i, Test = "Dunn Test") %>% 
+                        bind_rows(res.dunn.all, .)
+    
+  }
+  
+}
+
+
+#-------------------------------------------------------------------------------
+# Plot Alpha diversity 
+#-------------------------------------------------------------------------------
+# Make data frame for significance levels 
+max.div <- alpha.df.long %>% 
+              group_by(Diversity_Index) %>% 
+              slice(which.max(Value)) %>% 
+              mutate(y = Value)
+
+sig.df <- res.dunn.all %>% 
+            mutate(Start = str_split(.$Comparison, " - ", simplify = TRUE)[, 1], 
+                   End = str_split(.$Comparison, " - ", simplify = TRUE)[, 2],
+                   p.short = paste0("p=", round(.$P.adj, 3))) %>% 
+            filter(.$P.adj <= 0.05) %>% 
+            left_join(., max.div, by = "Diversity_Index") %>% 
+            group_by(Diversity_Index) %>% 
+            mutate(y.adj = y*(1:n()*0.15 + 1)) %>% 
+            ungroup()
+
+# Plot alpha diversity 
+alpha.plot <- ggplot(alpha.df.long, aes_string(y = "Value", 
+                                               x = "Phenotype")) + 
+                  geom_jitter(aes_string(color = "Phenotype"), size = 2, 
+                              alpha = 0.5, width = 0.25, height = 0) +
+                  geom_boxplot(fill = "black", alpha = 0.1, outlier.colour = NA) +
+                  geom_signif(data = sig.df,
+                              aes(xmin = Start,
+                                  xmax = End,
+                                  annotations = p.short,
+                                  y_position = y.adj),
+                              textsize = 4, vjust = -0.1,
+                              manual = TRUE, margin_top = 1) +
+                  geom_point(data = sig.df,
+                              aes(x = End, y = y*1.4), x=NA) +
+                  facet_wrap("Diversity_Index", ncol = 2, scales = "free") + 
+                  theme_bw() + 
+                  scale_color_manual(values = col.gr) + 
+                  theme(legend.position = "none")
+
+ggsave("out/fig/alpha_3grs.png", alpha.plot, width = 7, height = 5, dpi = 600)
+
+
+################################################################################
+# Two groups 
+################################################################################
+#-------------------------------------------------------------------------------
+# Statistical comparison wilcoxon test 
+#-------------------------------------------------------------------------------
+alpha.df.long.2gr <- alpha.df.long[!alpha.df.long$Phenotype %in% "Control", ]
+
+wil.res.all <- NULL
+
+wil.formula <- paste0("Value ~ ", "Phenotype")
+
+for (i in unique(alpha.df.long.2gr[, "Diversity_Index"])) {
+  
+  res.wil <- alpha.df.long.2gr %>% 
+                filter(Diversity_Index == i) %>% 
+                wilcox.test(as.formula(wil.formula), .) %>% 
+                tidy() %>% 
+                mutate(Index = i)
+  
+  wil.res.all <- bind_rows(wil.res.all, res.wil)
+  
+}
+
+
+#-------------------------------------------------------------------------------
+# Plot Alpha diversity 
+#-------------------------------------------------------------------------------
+# NO significant differences where found between two groups  
+
+# Plot alpha diversity 
+alpha.plot.2grs <- ggplot(alpha.df.long.2gr, aes_string(y = "Value", 
+                                                        x = "Phenotype")) + 
+                  geom_jitter(aes_string(color = "Phenotype"), size = 2, 
+                              alpha = 0.5, width = 0.25, height = 0) +
+                  geom_boxplot(fill = "black", alpha = 0.1, outlier.colour = NA) +
+                  facet_wrap("Diversity_Index", ncol = 2, scales = "free") + 
+                  theme_bw() + 
+                  scale_color_manual(values = col.gr) + 
+                  theme(legend.position = "none")
+
+ggsave("out/fig/alpha_2grs.png", alpha.plot.2grs, width = 5, height = 5, dpi = 600)
+
+rm(list = c("alpha.df", "alpha.df.long", "alpha.df.long.2gr", "max.div", 
+            "alpha.plot", "alpha.plot.2grs", "res.dunn", "res.kw", "res.wil", 
+            "sig.df", "i", "kw.formula", "wil.formula"))
+```
+\
+**Table 1** Results of statistical testing of differences in microbiota alpha diversity between 
+LIR, MIR phenotypes and the control group. The statistical testing performed using Kruskal–Wallis test. \
+```{r , message=FALSE, warning=FALSE, echo=FALSE, results='asis'}
+kable(res.kw.all)
+```
+\
+\
+\
+**Table 2** Results of post-hoc statistical testing of differences in microbiota alpha diversity between LIR, MIR phenotypes and the control group. The statistical testing performed using Dunn test. The Dunn test performed only if Kruskal–Wallis test results are significant. \
+```{r , message=FALSE, warning=FALSE, echo=FALSE, results='asis'}
+kable(res.dunn.all)
+```
+\
+\
+\
+**Table 3** Results of statistical testing of differences in microbiota alpha diversity between LIR and MIR phenotypes. The statistical testing performed using Wilcoxon signed-rank test. \
+```{r , message=FALSE, warning=FALSE, echo=FALSE, results='asis'}
+kable(wil.res.all)
+```
+\
+\
+
+### 2. Diferences in beta diversity between the groups
+
+```{r , message=FALSE, warning=FALSE, results='hide', echo=FALSE}
+#-------------------------------------------------------------------------------
+# Fit ADONIS model to beta diversity ordination
+#-------------------------------------------------------------------------------
+# Make CSS normalized count 
+otu.tab.css.3gr <- phyloseq_to_metagenomeSeq(ps1) %>% 
+                    cumNorm(., p=cumNormStatFast(.)) %>% 
+                      MRcounts(., norm=TRUE, log=TRUE) %>% 
+                      as.data.frame()
+
+# Make a copy for ps1 and replace OTU table with CSS normalized table 
+ps1.css.3gr <- ps1
+
+otu_table(ps1.css.3gr) <- otu_table(otu.tab.css.3gr, taxa_are_rows = TRUE)
+
+
+# Calculate distances and statistically test
+used.dist <- c("unifrac", "wunifrac", "jaccard", "bray")
+
+# Formula for ADONIS testing
+adonis.formula <- paste0("dist.inst ~ ", "Sex", " + ", 
+                                         "Center", " + ", 
+                                         "Age", " + ", 
+                                         "Phenotype")
+
+################################################################################
+# Three groups 
+################################################################################
+res.adonis.comb.3grs <- list()
+
+for (i in used.dist) {
+  
+  dist.inst <- distance(ps1.css.3gr, method = i, type = "samples")
+  
+  res.adonis.comb.3grs[[i]] <- adonis2(formula = as.formula(adonis.formula), 
+                                      data = ps1.meta, 
+                                      by = "terms", 
+                                      permutations = 999, 
+                                      parallel = 4) %>% 
+                            tidy() %>% 
+                            mutate(Distance = i)
+}
+
+
+################################################################################
+# Two groups 
+################################################################################
+# Prepare data 
+
+# Make CSS normalized count 
+otu.tab.css.2gr <- phyloseq_to_metagenomeSeq(ps1.2gr) %>% 
+                    cumNorm(., p=cumNormStatFast(.)) %>% 
+                      MRcounts(., norm=TRUE, log=TRUE) %>% 
+                      as.data.frame()
+
+# Make a copy for ps1 without Control group and replace OTU table with CSS 
+# normalized table 
+ps1.css.2gr <- ps1.2gr
+
+otu_table(ps1.css.2gr) <- otu_table(otu.tab.css.2gr, taxa_are_rows = TRUE)
+
+ps1.meta.2grs <- ps1.css.2gr %>% 
+                    sample_data() %>% 
+                    as.matrix() %>% as.data.frame()
+
+res.adonis.comb.2grs <- list()
+
+# ADONIS
+for (i in used.dist) {
+  
+  dist.inst <- distance(ps1.css.2gr, method = i, type = "samples")
+  
+  res.adonis.comb.2grs[[i]] <- adonis2(formula = as.formula(adonis.formula), 
+                                      data = ps1.meta.2grs, 
+                                      by = "terms", 
+                                      permutations = 999, 
+                                      parallel = 4) %>% 
+                            tidy() %>% 
+                            mutate(Distance = i)
+}
+```
+
+
+```{r , message=FALSE, warning=FALSE, results='hide', echo=FALSE}
+#-------------------------------------------------------------------------------
+# Plot ordination 
+#-------------------------------------------------------------------------------
+source("R/phy_pcoa_plot.R")
+source("R/phy_dbrda_plot.R")
+
+################################################################################
+# ASV level
+################################################################################
+#-------------------------------------------------------------------------------
+# Three groups 
+#-------------------------------------------------------------------------------
+# PCoA 
+pcoa.3grs <- phy_pcoa_plot(ps1.css.3gr, group_column = "Phenotype")
+
+pcoa.3grs.f <- pcoa.3grs + 
+                  scale_color_manual(values = col.gr) +
+                  scale_fill_manual(values = col.gr)
+
+ggsave("out/fig/pcoa_3gr.png", pcoa.3grs.f, width = 7, height = 5, dpi = 600)
+
+# dbRDA 
+dbRDA.3gr <- phy_dbrda_plot(ps1.css.3gr, color_column = "Phenotype", 
+                            rda_formula = "Phenotype")
+
+dbRDA.3gr.f <- dbRDA.3gr + 
+                  scale_color_manual(values = col.gr) +
+                  scale_fill_manual(values = col.gr)
+
+ggsave("out/fig/dbrda_3gr.png", dbRDA.3gr.f, width = 7, height = 5, dpi = 600)
+
+#-------------------------------------------------------------------------------
+# Two groups 
+#-------------------------------------------------------------------------------
+# PCoA 
+pcoa.2grs <- phy_pcoa_plot(ps1.css.2gr, group_column = "Phenotype")
+
+pcoa.2grs.f <- pcoa.2grs + 
+                  scale_color_manual(values = col.gr[2:3]) +
+                  scale_fill_manual(values = col.gr[2:3])
+
+ggsave("out/fig/pcoa_2gr.png", pcoa.2grs.f, width = 7, height = 5, dpi = 600)
+
+
+# dbRDA 
+dbRDA.2gr <- phy_dbrda_plot(ps1.css.2gr, color_column = "Phenotype", 
+                                            rda_formula = "Phenotype")
+
+dbRDA.2gr.f <- dbRDA.2gr + 
+                  scale_color_manual(values = col.gr[2:3]) +
+                  scale_fill_manual(values = col.gr[2:3])
+
+ggsave("out/fig/dbrda_2gr.png", dbRDA.2gr.f, width = 7, height = 5, dpi = 600)
+
+# dbRDA V2 all variables
+dbRDA.2gr_v2 <- phy_dbrda_plot(ps1.css.2gr, color_column = "Phenotype", 
+                                            rda_formula = paste0("Sex", " + ", 
+                                                               "Center", " + ", 
+                                                               "Age", " + ", 
+                                                               "Phenotype"))
+
+dbRDA.2gr_v2.f <- dbRDA.2gr_v2 + 
+                  scale_color_manual(values = col.gr[2:3]) +
+                  scale_fill_manual(values = col.gr[2:3])
+
+ggsave("out/fig/dbrda_2gr_v2.png", dbRDA.2gr_v2.f, 
+       width = 7, height = 5, dpi = 600)
+
+```
+\
+**Table 4** Results of statistical testing of differences in microbiota beta diversity between 
+LIR, MIR phenotypes, and the control group. The statistical testing is performed using ADONIS2 (PERMANOVA). \
+```{r , message=FALSE, warning=FALSE, echo=FALSE, results='asis'}
+for (i in names(res.adonis.comb.3grs)) {
+  
+  print(kable(res.adonis.comb.3grs[[i]], caption = i ))
+  
+}
+
+```
+\
+\
+\
+**Table 5** Results of statistical testing of differences in microbiota beta diversity between 
+LIR and MIR phenotypes. The statistical testing is performed using ADONIS2 (PERMANOVA). \
+```{r , message=FALSE, warning=FALSE, echo=FALSE, results='asis'}
+for (i in names(res.adonis.comb.2grs)) {
+  
+  print(kable(res.adonis.comb.2grs[[i]], caption = i))
+
+}
+```
+\
+\
+
+### 3. Dissimularity distance comparision between groups
+
+```{r , message=FALSE, warning=FALSE, results='hide', echo=FALSE}
+#-------------------------------------------------------------------------------
+# Prepare data 
+#-------------------------------------------------------------------------------
+# Make dictionary (named vector)
+key.lir.mir <- ps1.meta %>% 
+                pull(Phenotype) %>% 
+                as.character(.)  %>% 
+                setNames(., ps1.meta$SeqID)
+
+long.dist.final <- NULL
+
+for (i in used.dist) {
+  
+  dist.inst <- distance(ps1.css.3gr, method = i, type = "samples")
+  
+    # Convert distance matrix into a long dataframe 
+  long.dist <- dist.inst %>% 
+                as.matrix() %>% 
+                as.data.frame() %>% 
+                mutate(key2 = rownames(.)) %>% 
+                gather("SeqID", "value", -key2) 
+
+  # Make a column with sorted ID pairs (will be used for filtering)
+  sort.col <- long.dist %>% 
+                dplyr::select(-c("value")) %>% 
+                apply(., 1, sort) %>% 
+                t() %>% 
+                as.data.frame()
+
+  # Remove duplicated distances and distances between same samples 
+  long.dist.filt <- long.dist %>% 
+                      bind_cols(., sort.col) %>% 
+                      distinct(V1, V2, .keep_all = TRUE) %>% 
+                      dplyr::select(-c("V1", "V2")) %>% 
+                      filter(.$SeqID != .$key2) 
+
+  # Make group comparison ID vector
+  CompID <- rbind(as.character(recode(long.dist.filt$key2, !!!key.lir.mir)), 
+                  as.character(recode(long.dist.filt$SeqID, !!!key.lir.mir))) %>% 
+           apply(., 2, sort) %>% 
+           t() %>% 
+           as.data.frame() %>% 
+           mutate(Comparision_ID = paste(.$V1, .$V2, sep="-"), 
+                  Comparision_type = ifelse(.$V1 == .$V2, "Within", "Between")) %>% 
+           dplyr::select(c("Comparision_ID", "Comparision_type")) 
+  
+  # Add columns to final data frame 
+  long.dist.final <- bind_cols(long.dist.filt, CompID, Distance=i) %>% 
+                      bind_rows(long.dist.final, .)
+
+}
+
+
+#-------------------------------------------------------------------------------
+# Test differences statistically 
+#-------------------------------------------------------------------------------
+kw.res.dist <- NULL
+
+dune.res.dist <- NULL
+
+for (i1 in unique(long.dist.final$Distance)) {
+  
+  for(i2 in unique(long.dist.final$Comparision_type)) {
+    
+    dist.sub <- long.dist.final %>% 
+                  filter(Distance == i1, Comparision_type == i2)
+    
+    kw.res <- kruskal.test(value ~ Comparision_ID, dist.sub) %>% 
+                            tidy() %>% 
+                            mutate(Distance = i1, Comparision_type = i2)
+    
+    kw.res.dist <- bind_rows(kw.res.dist, kw.res)
+    
+    
+    if (kw.res$p.value < 0.05) {
+    
+         res.dunn <- dunnTest(value ~ Comparision_ID, dist.sub)
+         
+         dune.res.dist <- res.dunn$res %>% 
+                              mutate(Distance = i1, Comparision_type = i2, 
+                                     Test = "Dunn Test") %>% 
+                              bind_rows(dune.res.dist, .)
+    
+    }
+  
+  }
+  
+}
+
+
+#-------------------------------------------------------------------------------
+# Plot distances 
+#-------------------------------------------------------------------------------
+
+# Prepare dataframe for significance levels 
+max.dist <- long.dist.final %>% 
+              group_by(Comparision_type, Distance) %>% 
+              slice(which.max(value)) %>% 
+              mutate(y = value)
+
+sig.df <- dune.res.dist %>% 
+            mutate(Start = str_split(.$Comparison, " - ", simplify = TRUE)[, 1], 
+                   End = str_split(.$Comparison, " - ", simplify = TRUE)[, 2],
+                   p.short = paste0("p=", round(.$P.adj, 3))) %>% 
+            filter(.$P.adj <= 0.05) %>% 
+            mutate(p.simb = ifelse(P.adj < 0.01, "*", "**")) %>% 
+            mutate(p.simb = ifelse(P.adj < 0.001, "***", p.simb)) %>% 
+            left_join(., max.dist, by = c("Comparision_type", "Distance")) %>% 
+            group_by(Comparision_type, Distance) %>% 
+            mutate(y.adj = y*(1:n()*0.15 + 1)) %>% 
+            ungroup()
+
+
+dist.dif.plot <- ggplot(long.dist.final, aes(x = Comparision_ID, y = value)) + 
+                # geom_jitter(alpha = 0.2, size = 0.5, height = 0, width = 0.25) + 
+                  geom_boxplot() +
+                  geom_signif(data = sig.df,
+                                        aes(xmin = Start,
+                                            xmax = End,
+                                            annotations = p.simb,
+                                            y_position = y.adj),
+                                        textsize = 4, vjust = 0.5,
+                                        manual = TRUE) +
+                            geom_point(data = sig.df,
+                                        aes(x = End, y = y*1.5), x=NA) +
+                  facet_wrap(Comparision_type ~ Distance, scales = "free", ncol = 4) +
+                  theme_bw() +
+                  theme(axis.text.x = element_text(angle = 45, hjust = 1))  
+
+ggsave("out/fig/distances_comparision.png", dist.dif.plot, width = 7, height = 5)
+```
+\
+**Table 6** Results of statistical testing of differences in dissimilarity distances between 
+LIR, MIR phenotypes, and the control group. The statistical testing is performed using Kruskal–Wallis test. \
+```{r , message=FALSE, warning=FALSE, echo=FALSE, results='asis'}
+kable(kw.res.dist)
+```
+\
+\
+\
+**Table 7** Results of statistical post-hoc testing of differences in dissimilarity distances between LIR, MIR phenotypes, and the control group. The statistical testing is performed using Dune test after Kruskal–Wallis test. \
+```{r , message=FALSE, warning=FALSE, echo=FALSE, results='asis'}
+kable(dune.res.dist)
+```
+\
+\
+
+### 4. Taxa differentially abundant between LIR and MIR phenotype
+
+```{r , message=FALSE, warning=FALSE, results='hide', echo=FALSE}
+################################################################################
+# Differential abundance 
+################################################################################
+# Filter out taxa that are prevalent in less than 25% 
+ps.gr2.f <- phy_taxa_filter(ps1.2gr, 
+                                prev = 0.25, 
+                                group_col = "Phenotype")
+
+anc.out <-  ancombc(phyloseq = ps.gr2.f, 
+                        formula = "Phenotype", 
+                        p_adj_method = "fdr", 
+                        zero_cut = 0.90, 
+                        lib_cut = 5000, 
+                        group = "Phenotype", 
+                        struc_zero = FALSE, 
+                        neg_lb = FALSE, 
+                        tol = 1e-5, 
+                        max_iter = 100, 
+                        conserve = FALSE, 
+                        alpha = 0.1,
+                        global = TRUE)
+
+
+#-------------------------------------------------------------------------------
+# Plot results - ANCOM-BC 
+#-------------------------------------------------------------------------------
+# Convert to proportion
+ps.gr2.prop <- transform_sample_counts(ps1.2gr, function(x){(x/sum(x))*100})
+  
+# Prepare data for ploting
+da.taxa.df <- anc.out$res$diff_abn %>% 
+                filter(PhenotypeMIR == TRUE) %>% 
+                rownames(.) %>% 
+                prune_taxa(., ps.gr2.prop) %>% 
+                otu_table() %>%
+                as.matrix() %>% 
+                as.data.frame() %>% 
+                mutate(Taxa = rownames(.)) %>% 
+                gather(key = "SeqID", value = "Abundance", -Taxa) %>% 
+                left_join(., ps1.meta[, c("SeqID", "Phenotype")], by = "SeqID")
+
+# Summary table
+dif.res.tab <- da.taxa.df %>% 
+                  group_by(Taxa, Phenotype) %>% 
+                  summarise(Mean = mean(Abundance), 
+                            Median = median(Abundance), 
+                            SD=sd(Abundance)) %>% 
+                  pivot_wider(id_cols = Taxa, 
+                              names_from = Phenotype, 
+                              values_from = c(Mean, Median, SD)) %>% 
+                  left_join(., mutate(anc.out$res$beta, 
+                                      Taxa=rownames(anc.out$res$beta)), 
+                            by="Taxa") %>% 
+                  left_join(., mutate(anc.out$res$p_val, 
+                                      Taxa=rownames(anc.out$res$p_val)), 
+                            by="Taxa") %>% 
+                  left_join(., mutate(anc.out$res$q_val, 
+                                      Taxa=rownames(anc.out$res$q_val)), 
+                            by="Taxa") %>% 
+                  rename(beta_MIR=PhenotypeMIR.x, 
+                         p_val=PhenotypeMIR.y, 
+                         q_val=PhenotypeMIR) 
+
+
+
+write.csv(dif.res.tab, "out/LIR_MIR_asv_sig_DA.csv")
+
+
+dif.abund.tax <- ggplot(da.taxa.df, aes_string(y = "Abundance", 
+                                               x = "Phenotype")) + 
+                  geom_jitter(aes_string(color = "Phenotype"), size = 2, 
+                              alpha = 0.5, width = 0.25, height = 0) +
+                  geom_boxplot(fill = "black", alpha = 0.1, outlier.colour = NA) +
+                  facet_wrap("Taxa", ncol = 5, scales = "free") + 
+                  theme_bw() + 
+                  scale_color_manual(values = col.gr) + 
+                  theme(legend.position = "none") + ylab("Abundance (%)")
+
+ggsave("out/fig/diff_abundtaxa_asv_v1.png", dif.abund.tax, 
+       width = 10, height = 10, dpi = 600)
+
+
+dif.abund.tax_v2 <- ggplot(da.taxa.df, aes_string(x = "Abundance", 
+                                                   y = "Taxa",
+                                                   color = "Phenotype")) + 
+                      geom_boxplot(fill = "black", alpha = 0.1) +
+                      theme_bw() + 
+                      scale_color_manual(values = col.gr[2:3]) + 
+                      xlab("Abundance (%)") + 
+                      ylab(" ") +
+                      xlim(0, 5)
+
+ggsave("out/fig/diff_abundtaxa_asv_v2.png", dif.abund.tax_v2, 
+       width = 6, height = 6, dpi = 600)
+```
+
+```{r , message=FALSE, warning=FALSE, results='hide', echo=FALSE}
+# Filter out taxa that are prevalent in less than 25% 
+ps.gr2.genus.f <- phy_taxa_filter(ps1.genus.2gr, 
+                                prev = 0.25, 
+                                group_col = "Phenotype")
+
+anc.out.g <- ancombc(phyloseq = ps.gr2.genus.f, 
+                        formula = "Phenotype", 
+                        p_adj_method = "fdr", 
+                        zero_cut = 0.90, 
+                        lib_cut = 5000, 
+                        group = "Phenotype", 
+                        struc_zero = FALSE, 
+                        neg_lb = FALSE, 
+                        tol = 1e-5, 
+                        max_iter = 100, 
+                        conserve = FALSE, 
+                        alpha = 0.1,
+                        global = TRUE)
+
+
+#-------------------------------------------------------------------------------
+# Plot results - ANCOM-BC 
+#-------------------------------------------------------------------------------
+# Convert to proportion
+ps.gr2.prop.g <- transform_sample_counts(ps1.genus.2gr, function(x){(x/sum(x))*100})
+  
+# Prepare data for ploting
+da.taxa.df.g <- anc.out.g$res$diff_abn %>% 
+                filter(PhenotypeMIR == TRUE) %>% 
+                rownames(.) %>% 
+                prune_taxa(., ps.gr2.prop.g) %>% 
+                otu_table() %>%
+                as.matrix() %>% 
+                as.data.frame() %>% 
+                mutate(Taxa = rownames(.)) %>% 
+                gather(key = "SeqID", value = "Abundance", -Taxa) %>% 
+                left_join(., ps1.meta[, c("SeqID", "Phenotype")], by = "SeqID")
+
+
+# Summary table
+dif.res.tab.g <- da.taxa.df.g %>% 
+                  group_by(Taxa, Phenotype) %>% 
+                  summarise(Mean = mean(Abundance), 
+                            Median = median(Abundance), 
+                            SD=sd(Abundance)) %>% 
+                  pivot_wider(id_cols = Taxa, 
+                              names_from = Phenotype, 
+                              values_from = c(Mean, Median, SD)) %>% 
+                  left_join(., mutate(anc.out.g$res$beta, 
+                                      Taxa=rownames(anc.out.g$res$beta)), 
+                            by="Taxa") %>% 
+                  left_join(., mutate(anc.out.g$res$p_val, 
+                                      Taxa=rownames(anc.out.g$res$p_val)), 
+                            by="Taxa") %>% 
+                  left_join(., mutate(anc.out.g$res$q_val, 
+                                      Taxa=rownames(anc.out.g$res$q_val)), 
+                            by="Taxa") %>% 
+                  rename(beta_MIR=PhenotypeMIR.x, 
+                         p_val=PhenotypeMIR.y, 
+                         q_val=PhenotypeMIR) 
+
+write.csv(dif.res.tab.g, "out/LIR_MIR_genus_sig_DA.csv")
+
+dif.abund.tax.g <- ggplot(da.taxa.df.g, aes_string(y = "Abundance", 
+                                                   x = "Phenotype")) + 
+                  geom_jitter(aes_string(color = "Phenotype"), size = 2, 
+                              alpha = 0.5, width = 0.25, height = 0) +
+                  geom_boxplot(fill = "black", alpha = 0.1, outlier.colour = NA) +
+                  facet_wrap("Taxa", ncol = 4, scales = "free") + 
+                  theme_bw() + 
+                  scale_color_manual(values = col.gr) + 
+                  theme(legend.position = "none") + ylab("Abundance (%)")
+
+ggsave("out/fig/genus_sig_DA_relative.png", dif.abund.tax.g, 
+       width = 8, height = 5, dpi = 600)
+
+
+dif.abund.tax.g_v2 <- ggplot(da.taxa.df.g, aes_string(x = "Abundance", 
+                                                   y = "Taxa",
+                                                   color = "Phenotype")) + 
+                      geom_boxplot(fill = "black", alpha = 0.1) +
+                      theme_bw() + 
+                      scale_color_manual(values = col.gr[2:3]) + 
+                      xlab("Abundance (%)") + 
+                      ylab(" ") + 
+                      xlim(0, 20)
+
+ggsave("out/fig/diff_abundtaxa_genus_v2.png", dif.abund.tax.g_v2, 
+       width = 6, height = 2.5, dpi = 600)
+```
+\
+**Table 8** ASVs significantly different in abundance between the phenotype groups. Differential abundance testing was performed with ANCOM-BC and results with FDR adjusted p-value (q-values) less or equal 0.1 are reported.\
+```{r , message=FALSE, warning=FALSE, echo=FALSE, results='asis'}
+kable(dif.res.tab)
+```
+\
+\
+\
+**Table 9** Genera significantly different in abundance between the phenotype groups. Differential abundance testing was performed with ANCOM-BC and results with FDR adjusted p-value (q-values) less or equal 0.1 are reported.\
+```{r , message=FALSE, warning=FALSE, echo=FALSE, results='asis'}
+kable(dif.res.tab.g)
+```
