@@ -8,13 +8,11 @@
 #----------------------------------------
 
 
-in_folder=/home/jovyan/work/pvc2/person_phenotype
+in_folder=./person_phenotype
 
-out_folder=/home/jovyan/work/pvc/PERSON/out/q_7aug23_phenotype
+out_folder=./out/q_7aug23_phenotype
 
-q_env_path=/home/jovyan/work/conda_env/qiime2
-
-picr_env_path=/home/jovyan/work/conda_env/picrust2
+q_env_path=./conda_env/qiime2
 
 # meta_data=PVC/PERSON/meta.txt
 #----------------------------------------
@@ -32,7 +30,7 @@ p_max_ee_f=2
 p_max_ee_r=2
 
 # Taxanomic classification (path to classifier)
-tax_classif=/home/jovyan/work/pvc/tools/res/classif/silva-138-99-nb-weighted-classifier.qza
+tax_classif=./silva-138-99-nb-weighted-classifier.qza
 
 # Core analysis
 samp_deepth=10000
@@ -130,31 +128,8 @@ qiime tools export \
 --input-path $out_folder/rep_seqs.qza \
 --output-path $out_folder/export/rep_seqs
   
-
-# # # Make summary (core analysis)
-# # # ----------------------------------------------------------------
-
-# # qiime diversity core-metrics-phylogenetic \
-# # --i-table $out_folder/asv_table.qza \
-# # --i-phylogeny $out_folder/tree/rooted-tree.qza \
-# # --p-sampling-depth $samp_deepth \
-# # --m-metadata-file $meta_data \
-# # --p-n-jobs-or-threads $n_threads \
-# # --output-dir $out_folder/core_analysis
-
 conda deactivate 
 
-
-
-source activate $picr_env_path
-
-picrust2_pipeline.py \
--s $out_folder/export/rep_seqs/dna-sequences.fasta \
--i $out_folder/export/asv_table/feature-table.biom \
--o $out_folder/picrust \
--p $n_threads
-
-conda deactivate 
 
 
 # Save results as an archive 
