@@ -113,6 +113,8 @@ for(i.lvl in tax.lvls)  {
 
   ps.ls[[i.lvl]] <- list("Raw" = ps.inst, 
                          "Rare" = rarefy_even_depth(ps.inst, rngseed = 347), 
+                         "Relat" = transform_sample_counts(ps.inst, 
+                                                    function(x){x/sum(x)*100}),
                          "CSS" = phy_css_norm(ps.inst))
 }
 
@@ -137,6 +139,8 @@ ps.picr <- phyloseq(picr.otu, picr.tax)
 # Normolize count and Place into the same list as other phyloseqs
 ps.ls[["Picrust"]] <- list("Raw" = ps.picr, 
                            "Rare" = rarefy_even_depth(ps.picr, rngseed = 347), 
+                           "Relat" = transform_sample_counts(ps.picr, 
+                                                   function(x){x/sum(x)*100}),
                            "CSS" = phy_css_norm(ps.picr))
 
 
