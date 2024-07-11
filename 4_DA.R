@@ -99,6 +99,9 @@ for(i.set in 1:nrow(set.gr)) {
                     filter(.data[[grep(gr.col, colnames(.), value = TRUE)]]) %>% 
                     pull(taxon)
     
+    DA.res.ls[["tabs"]][[set.inst]][[lvl.inst]][[norm.inst]][["sig_tax"]] <- sig.tax 
+    
+    
     # Extract and transform OTU table 
     otu.inst <- data.ls[[set.inst]][["PS"]][[lvl.inst]][[i.p.set]] %>% 
                    otu_table() %>% 
@@ -132,8 +135,8 @@ for(i.set in 1:nrow(set.gr)) {
     
     # Write results
     DA.res.ls[["plot"]][[set.inst]][[lvl.inst]][[norm.inst]] <- 
-      list(p = dif.abund.tax_v2, 
-           ntax = length(sig.tax))
+        list(p = dif.abund.tax_v2, 
+             ntax = length(sig.tax))
     
     ggsave(filename = paste0(dir.out, "/", set.inst, "/plots/", 
                              "DA_", lvl.inst, "_", p.norm, ".png"), 
@@ -165,7 +168,7 @@ for(i.set in 1:nrow(set.gr)) {
                                 values_from = c(Mean, Median, SD)) %>% 
                     left_join(., ancom.res.df, by="feature") 
     
-    DA.res.ls[["tabs"]][[set.inst]][[lvl.inst]][[norm.inst]] <- dif.res.tab
+    DA.res.ls[["tabs"]][[set.inst]][[lvl.inst]][[norm.inst]][["summary"]] <- dif.res.tab
     
     write.csv(dif.res.tab, 
               paste0(dir.out, "/", set.inst, "/tabs/", 
@@ -175,7 +178,9 @@ for(i.set in 1:nrow(set.gr)) {
   
 }
 
-# Combine data set
+#-------------------------------------------------------------------------------
+# Combine plots 
+#-------------------------------------------------------------------------------
 w.all <- c(DA.res.ls$plot$phen$Genus$Raw$ntax, 
            DA.res.ls$plot$phen$ASV$Raw$ntax)
 
@@ -197,3 +202,5 @@ ggsave(filename = paste0(dir.out, "/", set.inst, "/plots/",
        width = 12, 
        height = max(w.all)*0.2 + 1, 
        dpi = 600)
+
+save(file = "out/supp/DA_res.Rdata", list = "DA.res.ls")
