@@ -10,7 +10,6 @@ set.seed(prm.ls$General$Seed)
 # Load custom functions
 #-------------------------------------------------------------------------------
 source("R/RF_supp_functions.R")
-source("R/randomize_column.R")
 source("R/fix_taxa_names_for_plot.R")
 source("R/phy_taxa_filter.R")
 
@@ -18,557 +17,435 @@ source("R/phy_taxa_filter.R")
 # Variables 
 #-------------------------------------------------------------------------------
 # Data sets to use
-ps.set <- prm.ls$RF$data_set_ps
+PsSets <- prm.ls$RF$data_set_ps
   
-tax.lvls <- prm.ls$RF$tax_lvls
+TaxaLvs <- prm.ls$RF$tax_lvls
   
-norms <- prm.ls$RF$ASV_norm
+TaxaNorm <- prm.ls$RF$ASV_norm
   
-metabol.sets <- prm.ls$RF$metabol_tabs_indRF
+MetabolSets <- prm.ls$RF$metabol_tabs_indRF
+
+CombSets <- prm.ls$RF$sets_combRF
+
+AllFeatSets <- prm.ls$RF$all_feat_sets
+
+SigFeatSets <- prm.ls$RF$sig_feat_sets
+
+TransFun <- prm.ls$RF$metabol_count_trans
   
 # Columns to use
-gr.col <- prm.ls$General$Group_col
+MainGrCol <- prm.ls$General$Group_col
   
-id.col <- prm.ls$General$Part_id_col
+ParticID <- prm.ls$General$Part_id_col
   
 # RF parameters
-n.trees <- prm.ls$RF$n_trees
+RfNtrees <- prm.ls$RF$n_trees
   
-min.prev <- prm.ls$RF$feature_min_prev
+TaxaMinPrev <- prm.ls$RF$feature_min_prev
   
-n.perm <- prm.ls$RF$n_permut
+RfNprem <- prm.ls$RF$n_permut
   
-n.rand <- prm.ls$RF$n_times_shufle_group_col
+# ??? n.rand <- prm.ls$RF$n_times_shufle_group_col
   
-imp.max.p <- prm.ls$RF$max_pval_impotance
+RfImpMaxPval <- prm.ls$RF$max_pval_impotance
   
-combRF.sets <- prm.ls$RF$sets_combRF
-  
-gr.size.prop <- prm.ls$RF$gr_size_prop
+RfGrSizeBalance <- prm.ls$RF$gr_size_prop
 
-auto.tune.mtry <- prm.ls$RF$auto_tune_mtry
+RfAutoTuneMtry <- prm.ls$RF$auto_tune_mtry
   
 # Plotting parameters
-roc.size <- c("h" = 3.5, "w" = 5)
+RfPlotRocSize <- prm.ls$RF$plot_roc_size
   
-sum.p.size <- c("h_prop" = 0.6, "w_coef" = 0.75, "w_add" = 1.75)
-  
-sig.p.size <- c("h_coef" = 0.2, "h_add" = 2, "w" = 12)
-  
-n.top.p <- 10
+RfPlotSignifSize <- prm.ls$RF$plot_signif_size
+
+RfTopNSign <- prm.ls$RF$plot_top_n_signif
   
 # Results object
-out.dir <- prm.ls$RF$out_dir
-  
-rf.all.res.ls <- list()
-  
-dir.create(out.dir, recursive = TRUE, showWarnings = FALSE)
-  
-# Aestetics
-accu.p.color <- c(aes.ls[["col"]]$phen, "Overall" = "black")
-  
-  
+DirOut <- prm.ls$RF$out_dir
+
+# Colors 
+PlotColors <- c(aes.ls[["col"]]$phen, "Overall" = "black")
+
+# Metadata 
+Meta <- data.ls[[PsSets]][["meta"]]
+
+
 ################################################################################
 # Extract data for RF 
 ################################################################################
-rf.data.ls <- list()
-  
+RfDataFormLs <- list()
+
+RfDataPrmDf <- NULL
+
 #-------------------------------------------------------------------------------
 # OTU tables
 #-------------------------------------------------------------------------------
-ps.grid <- expand.grid("Samples_set" = ps.set, 
-                         "Tax_lvl" = tax.lvls, 
-                         "Count_norm" = norms, 
-                         "Min_prevalence" = min.prev, 
-                         stringsAsFactors = FALSE)
+TaxaDataGrid <- expand.grid("Tax_lvl" = TaxaLvs, 
+                            "Count_norm" = TaxaNorm, 
+                            "Min_prevalence" = TaxaMinPrev, 
+                            stringsAsFactors = FALSE)
   
+if(nrow(TaxaDataGrid) > 0) {
   
-for(i.grid in 1:nrow(ps.grid)) {
+  for(i in 1:nrow(TaxaDataGrid)) {
     
-    i.set <- ps.grid[i.grid, "Samples_set"]
+    # Variables 
+    iLvls <- TaxaDataGrid[i, "Tax_lvl"]
     
-    i.lvl <- ps.grid[i.grid, "Tax_lvl"]
+    iTaxaNorm <- TaxaDataGrid[i, "Count_norm"]
     
-    i.norm <- ps.grid[i.grid, "Count_norm"]
+    iTaxaMinPrev <- TaxaDataGrid[i, "Min_prevalence"]
     
-    i.prev <- ps.grid[i.grid, "Min_prevalence"]
+    # Objects 
+    iName <- paste(TaxaDataGrid[i, ], collapse = "--")
     
-    
-    ps.inst <- data.ls[[i.set]][["PS"]][[i.lvl]][[i.norm]] 
-    
-    meta.inst <- data.ls[[i.set]][["meta"]]
-    
-    if(!is.null(ps.inst)) {
+    iPs <- data.ls[[PsSets]][["PS"]][[iLvls]][[iTaxaNorm]] 
       
-      i.name <- paste(ps.grid[i.grid, ], collapse = "--")
+    # Extract data
+    iTaxaTab <- iPs %>% 
+                  phy_taxa_filter(prev_fraction = iTaxaMinPrev,  
+                                    group_col = MainGrCol) %>% 
+                    otu_table() %>% 
+                    as.matrix() %>% 
+                    t() %>% 
+                    as.data.frame() %>% 
+                    mutate(!!MainGrCol := Meta[[MainGrCol]]) 
       
-      # Extract data
-      otu.tab.inst <- ps.inst %>% 
-                          phy_taxa_filter(., prev_fraction = i.prev,  
-                                          group_col = gr.col) %>% 
-                          otu_table(.) %>% 
-                          as.matrix() %>% 
-                          t() %>% 
-                          as.data.frame() %>% 
-                          mutate(!!gr.col := meta.inst[[gr.col]]) %>% 
-                          setNames(gsub("-|\\+", "_", names(.)))
+    # Adjust row names to much rownames of metabolites tables
+    rownames(iTaxaTab) <- gsub("CIW1", "", rownames(iTaxaTab))
       
-      num.col <- grepl("^[0-9]", colnames(otu.tab.inst))
-      
-      names(otu.tab.inst)[num.col] <- paste0("p_", names(otu.tab.inst)[num.col])
-      
-      # Adjust row names to much rownames of metabolites tables
-      rownames(otu.tab.inst) <- gsub("CIW1", "", rownames(otu.tab.inst))
-      
-      rf.data.ls[[i.name]] <- otu.tab.inst
-      
+    # Collect data
+    RfDataFormLs[["Taxa"]][[iName]] <- iTaxaTab
+    
+    # Add to data frame 
+    RfDataPrmDf <- data.frame(set_type = "Taxa", 
+                              set = iName) %>% 
+                      rbind(RfDataPrmDf, .)
+    
   }
+  
 }
-  
-  
+
+
 #-------------------------------------------------------------------------------
 # Metabolites 
 #-------------------------------------------------------------------------------
-if (!is.null(metabol.sets)) {
+VecIdNameChange <- setNames(paste0("met_", ParticID), ParticID)
+
+if (!is.null(MetabolSets)) {
     
-    for(i.metabol in metabol.sets) {
+    for(i in MetabolSets) { 
       
-      metabol.inst <- data.ls[["Metabol"]][[i.metabol]] %>% 
-                        left_join(., 
-                                  data.ls[[i.set]][["meta"]][, c(gr.col, id.col)], 
-                                  by = id.col) %>% 
-                        filter(!is.na(.[[gr.col]])) %>% 
-                        column_to_rownames(var = id.col) %>% 
-                        setNames(gsub("-|\\:|\\(|\\)|\\/| ", "_", names(.)))
+      iMetabolTab <- data.ls[["Metabol"]][[i]] %>% 
+                        setNames(paste0("met_", colnames(.))) %>% 
+                        rename(all_of(VecIdNameChange)) %>% 
+                        left_join(., Meta[, c(MainGrCol, ParticID)], 
+                                  by = ParticID) %>% 
+                        filter(!is.na(.[[MainGrCol]])) %>% 
+                        column_to_rownames(var = ParticID) 
       
-      num.col <- grepl("[0-9]_", colnames(metabol.inst))
       
-      names(metabol.inst)[num.col] <- paste0("met_", names(metabol.inst)[num.col])
+      if(!is.null(TransFun)) {
+        
+        iMetabolTab <- iMetabolTab %>% 
+                            mutate(across(dplyr::where(is.numeric), 
+                                          TransFun))
+        
+      }
       
-      rf.data.ls[[paste0("metabol--",i.metabol)]] <- metabol.inst
-  }
+      RfDataFormLs[["Metabol"]][[i]] <- iMetabolTab
+      
+      # Add to data frame 
+      RfDataPrmDf <- data.frame(set_type = "Metabol", 
+                                set = i) %>% 
+                          rbind(RfDataPrmDf, .)
+      
+    }
+  
 }
-  
-  
+
+
 ################################################################################
 # Random forest model
 ################################################################################
+RfResLs <- list()
+
+RfDataSigLs <- list()
+
+RfFormula <- as.formula(paste0(MainGrCol, "~ ."))
+
 #-------------------------------------------------------------------------------
-# Run RF per dataset 
+# Individual sets 
 #-------------------------------------------------------------------------------
-rf.formula <- as.formula(paste0(gr.col, "~."))
+for(i in 1:nrow(RfDataPrmDf)) { 
   
-rf.res.ls <- list()
+  iPrm <- RfDataPrmDf[i, ]
   
-rf.res.df <- NULL
+  # All features
+  iData <- RfDataFormLs[[iPrm[["set_type"]]]][[iPrm[["set"]]]]
   
-for(i.df in names(rf.data.ls)) {
+  # Run model
+  iRfResAll <- RF_run_with_par(data_in = iData,
+                            RF_formula = RfFormula,
+                            group_col = MainGrCol,
+                            Mtry_auto_tune = RfAutoTuneMtry,
+                            n_trees = RfNtrees,
+                            gr_size_prop = RfGrSizeBalance,
+                            n_perm = RfNprem)
   
-  path.out <- paste0(out.dir, "/", i.df)
+  # Collect data 
+  RfResLs[["AllFeat"]][[iPrm[["set_type"]]]][[iPrm[["set"]]]] <- iRfResAll
   
-  dir.create(path.out, recursive = TRUE, showWarnings = FALSE)
-    
-  #-----------------------------------------------------------------------------
-  # Full RF model 
-  #-----------------------------------------------------------------------------
-  data.inst <- rf.data.ls[[i.df]]
+  # Only significant taxa 
+  iFeatTax <- RF_extract_importance(iRfResAll$Full) %>% 
+                select(-starts_with("MeanDecreaseGini")) %>% 
+                filter(if_any(ends_with("unscaled_pval"), ~ . <= RfImpMaxPval)) %>% 
+                pull(feature)
   
-  rf.res.inst <- RF_run_with_par(data_in = data.inst, 
-                                   RF_formula = rf.formula, 
-                                   group_col = gr.col, 
-                                   Mtry_auto_tune = auto.tune.mtry, 
-                                   n_trees = n.trees, 
-                                   gr_size_prop = gr.size.prop,
-                                   n_perm = n.perm)
+  # Data with only significant taxa
+  iDataSig <- iData[, c(MainGrCol, iFeatTax)]
   
-  rf.res.df <- rf.res.inst$Summary_df %>% 
-                      mutate(Data_set = i.df, 
-                             Feature_Set = "All features") %>% 
-                      bind_rows(rf.res.df, .)
-    
-  write.csv(x = rf.res.inst$Summary_df, 
-            file = paste0(path.out, "/sum_all__", i.df, ".csv"))
-    
-  ggsave(filename = paste0(path.out, "/roc_all__", i.df, ".png"), 
-         plot = rf.res.inst$ROC_objects$plot, 
-         width = roc.size[["w"]], 
-         height = roc.size[["h"]], 
-         dpi = 600)
+  RfDataSigLs[[iPrm[["set_type"]]]][[iPrm[["set"]]]] <- iDataSig
   
-  #-----------------------------------------------------------------------------
+  # Run model
+  iRfResSig <- RF_run_with_par(data_in = iDataSig,
+                                RF_formula = RfFormula,
+                                group_col = MainGrCol,
+                                Mtry_auto_tune = RfAutoTuneMtry,
+                                n_trees = RfNtrees,
+                                gr_size_prop = RfGrSizeBalance,
+                                n_perm = RfNprem)
+  
+  # Collect data 
+  RfResLs[["SigFeat"]][[iPrm[["set_type"]]]][[iPrm[["set"]]]] <- iRfResSig
+  
+}
+
+
+#-------------------------------------------------------------------------------
+# Combined sets 
+#-------------------------------------------------------------------------------
+for(i in names(CombSets)) { 
+  
+  # Combine data 
+  iTabsToComb <- c(RfDataSigLs$Taxa[CombSets[[i]]$Taxa], 
+                   RfDataSigLs$Metabol[CombSets[[i]]$Metabol])
+  
+  iOverSamp <- iTabsToComb %>% 
+                    lapply(function(x){rownames(x)}) %>% 
+                    Reduce(intersect, .) %>% 
+                    sort()
+  
+  iTabsToCombFilt <- iTabsToComb %>% 
+                        lapply(function(x){x[iOverSamp, ]})
+  
+  iCombDf <- bind_cols(iTabsToCombFilt) %>% 
+                mutate(!!MainGrCol := select(., starts_with(MainGrCol))[[1]]) %>% 
+                select(-starts_with(paste0(MainGrCol, "..."))) %>% 
+                suppressMessages()
+  
+  # Run model
+  iRfResComb <- RF_run_with_par(data_in = iCombDf,
+                               RF_formula = RfFormula,
+                               group_col = MainGrCol,
+                               Mtry_auto_tune = RfAutoTuneMtry,
+                               n_trees = RfNtrees,
+                               gr_size_prop = RfGrSizeBalance,
+                               n_perm = RfNprem)
+  
+  # Collect data 
+  RfResLs[["SigFeat"]][["Combs"]][[i]] <- iRfResComb
+  
+}
+
+
+################################################################################
+# Visualize and write results 
+################################################################################
+AllSetsPrmDf <- bind_rows(bind_cols(Type = "AllFeat", RfDataPrmDf),
+                    bind_cols(Type = "SigFeat", RfDataPrmDf), 
+                    data.frame(set = names(CombSets), 
+                               Type = "SigFeat", 
+                               set_type = "Combs"))
+
+RocDataDf <- NULL
+
+ResSummDf <- NULL
+
+ResImpPlotsLs <- list()
+
+for(i in 1:nrow(AllSetsPrmDf)) {
+  
+  # Variables 
+  iType <- AllSetsPrmDf[i, "Type"]
+  
+  iSetType <- AllSetsPrmDf[i, "set_type"]
+  
+  iSet <- AllSetsPrmDf[i, "set"]
+  
+  # Create directories 
+  iPathOut <- paste0(DirOut, "/", iSetType, "/", gsub(" ", "", iSet))
+  
+  dir.create(iPathOut, recursive = TRUE, showWarnings = FALSE)
+  
+  # Extract results 
+  iRfRes <- RfResLs[[iType]][[iSetType]][[iSet]]
+  
+  # Data frame for combined ROC curves 
+  RocDataDf <-  data.frame(sensitivity = iRfRes$ROC_objects$roc$sensitivities, 
+                           specificity = iRfRes$ROC_objects$roc$specificities, 
+                           AUC = iRfRes$ROC_objects$AUC) %>% 
+                    bind_cols(AllSetsPrmDf[i, ]) %>% 
+                    arrange(-row_number()) %>% 
+                    bind_rows(RocDataDf, .)
+                    
+  # Summary data 
+  ResSummDf <- iRfRes$Summary_df %>% 
+                  bind_cols(AllSetsPrmDf[i, ]) %>% 
+                  bind_rows(ResSummDf, .)
+  
+  
   # Features important for classification 
   #-----------------------------------------------------------------------------
   # Extract taxa
-  imp.inst <- RF_extract_importance(rfPermut_results = rf.res.inst[["Full"]])
-  
-  write.csv(x = imp.inst, 
-            file = paste0(path.out, "/features_all__", i.df, ".csv"))
+  iFeatImp <- RF_extract_importance(rfPermut_results = iRfRes[["Full"]])
   
   # Subset only significant taxa 
-  imp.inst.sig <- imp.inst %>% 
-                    select(-starts_with("MeanDecreaseGini")) %>% 
-                    filter(if_any(ends_with("unscaled_pval"), ~ . <= imp.max.p)) 
+  iFeatImpSig <- iFeatImp %>% 
+                  select(-starts_with("MeanDecreaseGini")) %>% 
+                  filter(if_any(ends_with("unscaled_pval"), ~ . <= RfImpMaxPval)) 
   
+  # Sets of features to plot 
+  iFeatToPlotLs <- list("AllSig" = iFeatImpSig$feature, 
+                        "TopNSig" = head(iFeatImpSig$feature, RfTopNSign), 
+                        "TopNAll" = head(iFeatImp$feature, RfTopNSign))
   
-  #-----------------------------------------------------------------------------                 
-  # Plot all sig taxa 
-  if(nrow(imp.inst.sig) > 0) {
-      
-     imp.inst.sig.p <- imp.inst.sig %>% 
-                        mutate(feature = fix_taxa_names_for_plot(feature)) %>% 
-                        mutate(feature = sub("_$", "", feature))
+  # Plot contributing features 
+  for(j in names(iFeatToPlotLs)) { 
     
-     imp.plot.sig <- list("p" = RF_plot_importance(imp.inst.sig.p, 
-                                                   cols_to_plot = c("LIR_importance",
-                                                                    "MIR_importance",
-                                                                    "MeanDecreaseAccuracy_importance"), 
-                                                   y_text_face_italic = FALSE), 
-                          "h" = nrow(imp.inst.sig)*sig.p.size[["h_coef"]] + 
-                                                   sig.p.size[["h_add"]], 
-                          "w" = sig.p.size[["w"]])
-     
-     write.csv(x = imp.inst.sig.p, 
-               file = paste0(path.out, "/features_sig__", i.df, ".csv"))
-     
-     ggsave(filename = paste0(path.out, "/features_sig__", i.df, ".png"), 
-            plot = imp.plot.sig$p, 
-            width = imp.plot.sig$w, 
-            height = imp.plot.sig$h, 
-            dpi = 600)
-     
-  } else { 
-    
-    imp.plot.sig <- NULL 
-    
-  }
-
-  
-  #-----------------------------------------------------------------------------
-  # Plot top 20 taxa 
-  if(nrow(imp.inst) < n.top.p) {
-    
-    top.cut <- nrow(imp.inst)
-    
-  } else { 
-    
-    top.cut <- n.top.p
-    
-  }
-  
-  imp.plot.topN.p <- imp.inst %>% 
-                      arrange(desc(MeanDecreaseAccuracy_importance)) %>% 
-                      slice(1:top.cut) %>% 
+    jFeatToPlot <- iFeatImp %>% 
+                      filter(feature %in% iFeatToPlotLs[[j]]) %>% 
                       mutate(feature = fix_taxa_names_for_plot(feature)) %>% 
-                      mutate(feature = sub("_$", "", feature)) %>% 
-                      RF_plot_importance(., 
-                                         cols_to_plot = c("LIR_importance",
-                                                          "MIR_importance",
-                                                          "MeanDecreaseAccuracy_importance"), 
-                                         y_text_face_italic = FALSE)
-  
-  imp.plot.topN <- list("p" = imp.plot.topN.p, 
-                        "h" = top.cut*sig.p.size[["h_coef"]] + sig.p.size[["h_add"]], 
-                        "w" = sig.p.size[["w"]])
-  
-  ggsave(filename = paste0(path.out, "/top_", top.cut, "_features__", i.df, ".png"), 
-         plot = imp.plot.topN$p, 
-         width = imp.plot.topN$w, 
-         height = imp.plot.topN$h, 
-         dpi = 600)
-  
-  
-  #-----------------------------------------------------------------------------
-  # Top N significant 
-  if(nrow(imp.inst.sig) > 0) {
+                      mutate(feature = gsub("_$|met_", "", feature)) 
     
-    if(nrow(imp.inst.sig) < n.top.p) {
+    if(nrow(jFeatToPlot) > 0) {
       
-      top.cut.sig <- nrow(imp.inst.sig)
+      # Object to collect plot and dimensions 
+      jFeatPlot <- list()
       
-    } else {
+      # Create plot using a custom ggplot function
+      jFeatPlot[["p"]] <- RF_plot_importance(
+                            jFeatToPlot, 
+                            cols_to_plot = c("LIR_importance",
+                                             "MIR_importance",
+                                             "MeanDecreaseAccuracy_importance"), 
+                            y_text_face_italic = FALSE)
       
-      top.cut.sig <- n.top.p
+      # Plot dim
+      jFeatPlot[["h"]] <- (nrow(jFeatToPlot)*
+                             RfPlotSignifSize[["h_coef"]] + 
+                             RfPlotSignifSize[["h_add"]])                
+      
+      jFeatPlot[["w"]] <- RfPlotSignifSize[["w"]]
+      
+      # Collect plots 
+      ResImpPlotsLs[[iSetType]][[gsub(" ", "", iSet)]] <- jFeatPlot 
+      
+      ggsave(filename = paste0(iPathOut, "/", j, "--", 
+                               gsub(" ", "", iSet), ".png"),
+             plot = jFeatPlot$p,
+             width = jFeatPlot$w,
+             height = jFeatPlot$h,
+             dpi = 600)
+      
     }
     
-    imp.plot.sig.topN.p <- imp.inst.sig %>% 
-                            arrange(desc(MeanDecreaseAccuracy_importance)) %>% 
-                            slice(1:top.cut) %>% 
-                            mutate(feature = fix_taxa_names_for_plot(feature)) %>% 
-                            mutate(feature = sub("_$", "", feature)) %>% 
-                            RF_plot_importance(., y_text_face_italic = FALSE, 
-                                               cols_to_plot = c("LIR_importance",
-                                                                "MIR_importance",
-                                                                "MeanDecreaseAccuracy_importance"))
-    
-    imp.plot.sig.topN <- list("p" = imp.plot.sig.topN.p, 
-                              "h" = top.cut.sig*sig.p.size[["h_coef"]] + 
-                                                sig.p.size[["h_add"]], 
-                              "w" = sig.p.size[["w"]])
-    
-    ggsave(filename = paste0(path.out, "/top_sig_", top.cut, "_features__", i.df, ".png"), 
-           plot = imp.plot.sig.topN$p, 
-           width = imp.plot.sig.topN$w, 
-           height = imp.plot.sig.topN$h, 
-           dpi = 600)
-    
-  } else {
-    
-    imp.plot.sig.topN <- NULL
-    
   }
   
-  
+  # Write out results 
   #-----------------------------------------------------------------------------
-  # RF with significant features
-  #-----------------------------------------------------------------------------
-  if(nrow(imp.inst.sig) > 0) {
-    
-  data.inst.sig <- data.inst %>% 
-                    select(all_of(c(gr.col, imp.inst.sig[["feature"]])))
-  
-  rf.res.inst.sig <- RF_run_with_par(data_in = data.inst.sig, 
-                                     RF_formula = rf.formula, 
-                                     group_col = gr.col, 
-                                     Mtry_auto_tune = auto.tune.mtry, 
-                                     n_trees = n.trees, 
-                                     gr_size_prop = gr.size.prop,
-                                     n_perm = n.perm) 
-  
-  # Collect results   
-  rf.res.df <- rf.res.inst.sig$Summary_df %>% 
-                        mutate(Data_set = i.df, 
-                               Feature_Set = "Significant features") %>% 
-                        bind_rows(rf.res.df, .)
-  
-  write.csv(x = rf.res.inst.sig$Summary_df, 
-            file = paste0(path.out, "/sum_sig__", i.df, ".csv"))
-  
-  ggsave(filename = paste0(path.out, "/roc_sig__", i.df, ".png"), 
-         plot = rf.res.inst.sig$ROC_objects$plot, 
-         width = roc.size[["w"]], 
-         height = roc.size[["h"]], 
+  # ROC plot 
+  ggsave(filename = paste0(iPathOut, "/ROC--", gsub(" ", "", iSet), ".png"), 
+         plot = iRfRes$ROC_objects$plot, 
+         width = RfPlotRocSize[["w"]], 
+         height = RfPlotRocSize[["h"]], 
          dpi = 600)
   
-  } else { 
-    
-    rf.res.inst.sig <- NULL
+  # Results summary 
+  write.csv(x = iRfRes$Summary_df, 
+            file = paste0(iPathOut, "/ConfMat--", gsub(" ", "", iSet), ".csv"))
   
-  }
-  
-  # Collect results   
-  rf.res.ls[["RF"]][["All"]][[i.df]] <- rf.res.inst
-  
-  rf.res.ls[["RF"]][["Sig"]][[i.df]] <- rf.res.inst.sig
-  
-  rf.res.ls[["features"]][[i.df]][["Sig_tab"]] <- imp.inst.sig
-  
-  rf.res.ls[["features"]][[i.df]][["plot_sig_all"]] <- imp.plot.sig
-  
-  rf.res.ls[["features"]][[i.df]][["plot_topN"]] <- imp.plot.topN
-  
-  rf.res.ls[["features"]][[i.df]][["plot_sig_topN"]] <- imp.plot.sig.topN
+  # Features importance table 
+  write.csv(x = iFeatImp, 
+            file = paste0(iPathOut, "/ImpFeat--", gsub(" ", "", iSet), ".csv"))
   
 }
-  
 
-#-------------------------------------------------------------------------------
-# Combined data sets 
-#-------------------------------------------------------------------------------
-if(!is.null(combRF.sets)) {
-  
-  for(i.comb in names(combRF.sets)) { 
-    
-    #---------------------------------------------------------------------------
-    # Prepare data
-    names.inst <- combRF.sets[[i.comb]] %>% 
-                    paste0(., collapse = "|") %>% 
-                    grep(., names(rf.data.ls), value = TRUE)
-
-    # Extract needed data sets
-    data.inst <- rf.data.ls[names.inst] 
-    
-    # Find shared samples 
-    samp.inst <- lapply(data.inst, function(x){rownames(x)}) %>% 
-                  Reduce(intersect, .)
-    
-    # Extract significant features 
-    sig.tax <- rf.res.ls$features[names.inst] %>% 
-               lapply(., function(x){x$Sig_tab$feature}) %>% 
-               unlist()
-    
-    # Subset significant taxa 
-    data.inst.f <- lapply(data.inst, 
-                           function(x){x[samp.inst, 
-                                         colnames(x) %in% sig.tax]}) %>% 
-                    bind_cols() %>% 
-                    mutate(!!gr.col := data.inst[[1]][samp.inst, gr.col])
-    
-    
-    #---------------------------------------------------------------------------
-    # Random Forest 
-    rf.res.inst.comb <- RF_run_with_par(data_in = data.inst.f, 
-                                       RF_formula = rf.formula, 
-                                       group_col = gr.col, 
-                                       Mtry_auto_tune = auto.tune.mtry, 
-                                       n_trees = n.trees, 
-                                       gr_size_prop = gr.size.prop,
-                                       n_perm = n.perm) 
-    
-    #---------------------------------------------------------------------------
-    # Collect results   
-    rf.res.df <- rf.res.inst.comb$Summary_df %>% 
-                      mutate(Data_set = i.comb, 
-                             Feature_Set = "Combined features") %>% 
-                      bind_rows(rf.res.df, .)
-    
-    rf.res.ls[["RF"]][["Comb"]][[i.comb]] <- rf.res.inst.comb
-    
-    #---------------------------------------------------------------------------
-    # Write out results 
-    short.name.inst <- gsub(" ", "", i.comb)
-    
-    path.out <- paste0(out.dir, "/", short.name.inst)
-    
-    dir.create(path.out, recursive = TRUE, showWarnings = FALSE)
-    
-    
-    write.csv(x = rf.res.inst.comb$Summary_df, 
-              file = paste0(path.out, "/sum_sig__", 
-                            short.name.inst, ".csv"))
-    
-    ggsave(filename = paste0(path.out, "/roc_sig__", 
-                             short.name.inst, ".png"), 
-           plot = rf.res.inst.comb$ROC_objects$plot, 
-           width = roc.size[["w"]], 
-           height = roc.size[["h"]], 
-           dpi = 600)
-    
-    #-----------------------------------------------------------------------------                 
-    # Features contribution 
-    imp.inst <- RF_extract_importance(rfPermut_results = rf.res.inst.comb[["Full"]])
-    
-    write.csv(x = imp.inst, 
-              file = paste0(path.out, "/features_all__", 
-                            short.name.inst, ".csv"))
-    
-    # Subset only significant taxa 
-    imp.inst.sig <- imp.inst %>% 
-                      select(-starts_with("MeanDecreaseGini")) %>% 
-                      filter(if_any(ends_with("unscaled_pval"), ~ . <= imp.max.p)) 
-    
-    if(nrow(imp.inst.sig) > 0) {
-      
-      imp.inst.sig.p <- imp.inst.sig %>% 
-                          mutate(feature = fix_taxa_names_for_plot(feature)) %>% 
-                          mutate(feature = sub("_$", "", feature))
-      
-      imp.plot.sig <- list("p" = RF_plot_importance(imp.inst.sig.p, 
-                                                    cols_to_plot = c("LIR_importance",
-                                                                     "MIR_importance",
-                                                                     "MeanDecreaseAccuracy_importance"), 
-                                                    y_text_face_italic = FALSE), 
-                           "h" = nrow(imp.inst.sig)*sig.p.size[["h_coef"]] + 
-                                                    sig.p.size[["h_add"]], 
-                           "w" = sig.p.size[["w"]])
-      
-      write.csv(x = imp.inst.sig.p, 
-                file = paste0(path.out, "/features_sig__", short.name.inst, ".csv"))
-      
-      ggsave(filename = paste0(path.out, "/features_sig__", short.name.inst, ".png"), 
-             plot = imp.plot.sig$p, 
-             width = imp.plot.sig$w, 
-             height = imp.plot.sig$h, 
-             dpi = 600) 
-    }
-  }
-}
-  
 
 ################################################################################
-# Plots 
-#-------------------------------------------------------------------------------
-# Accuracy plot 
-#-------------------------------------------------------------------------------
-# Adjust Data frame for plotting 
-rf.res.df <- rf.res.df %>%
-                mutate(Data_set = sub(".*?--", "", Data_set)) %>%
-                mutate(Data_set = sub("--.*", "", Data_set)) %>%
-                mutate(Data_set = sub("metab_all", "", Data_set)) %>%
-                mutate(Data_set = sub("_", " ", Data_set)) %>%
-                mutate(Data_set = factor(Data_set, unique(Data_set)), 
-                       Feature_Set = factor(Feature_Set, 
-                                            levels = c("All features", 
-                                                       "Significant features", 
-                                                       "Combined features"))) 
+# Combine plots - manual 
+################################################################################
+SummPlotsLs <- list()
 
-# Plot with a custom ggplot2 function             
-accu.p <- RF_plot_accuracy(RF_res_main = rf.res.df, 
-                           x_col_name = "Data_set", 
-                           color_col = "Group") + 
-              scale_color_manual(values = accu.p.color) + 
-              facet_grid(~ Feature_Set, scales = "free_x") +
-              ylim(c(25, 90)) + 
-              theme(panel.grid.major.x = element_blank(), 
-                    panel.grid.minor.x = element_blank(), 
-                    axis.text.x = element_text(angle = 25))
-
-# Write results 
-write.csv(x = rf.res.df, 
-          file = paste0(out.dir, "/res_sum_comb_all.csv"))
-
-ggsave(paste0(out.dir, "/accuracy_plot.png"), 
-          accu.p, 
-          width = roc.size[["w"]]*3, 
-          height = roc.size[["h"]])
-
-
-#-------------------------------------------------------------------------------
-# AUC plots 
-# Prepare data 
-roc.df <- NULL
-
-for(i1.res in names(rf.res.ls$RF)) {
-
-  for(i2.res in names(rf.res.ls$RF[[i1.res]])) {
-    
-    roc.inst <- rf.res.ls$RF[[i1.res]][[i2.res]]$ROC_objects$roc
-    
-    rf.res.ls$RF[[i1.res]][[i2.res]]$ROC_objects$AUC
-    
-    roc.df <- data.frame(sensitivity = roc.inst$sensitivities, 
-                         specificity = roc.inst$specificities, 
-                         Feature_Set = i1.res, 
-                         Data_set = i2.res, 
-                         AUC = rf.res.ls$RF[[i1.res]][[i2.res]]$ROC_objects$AUC) %>% 
-                 arrange(-row_number()) %>% 
-                 bind_rows(roc.df, .)
-    
-  }
+# Function to adjust data 
+fit_plot_data_loc <- function(x) {
+  
+  x %>% 
+    filter(!(Type == "SigFeat" & 
+               set == "fecal_FA")) %>% 
+      mutate(set = gsub("--.*|_metab_all", "", set)) %>% 
+      mutate(set = gsub("_", " ", set), 
+             Type = case_match(Type, 
+                               "AllFeat" ~ "All features", 
+                               "SigFeat" ~ "Only significant")) %>% 
+      mutate(set = factor(set, levels = unique(set)))
+  
 }
 
-# Adjust for ploting 
-roc.df <- roc.df %>% 
-            mutate(Data_set = sub(".*?--", "", Data_set)) %>%
-            mutate(Data_set = sub("--.*", "", Data_set)) %>%
-            mutate(Data_set = sub("metab_all", "", Data_set)) %>%
-            mutate(Data_set = sub("_", " ", Data_set)) %>%
-            mutate(Data_set = factor(Data_set, unique(Data_set)),
-                   Feature_Set = recode(Feature_Set, 
-                                         All = "All features", 
-                                         Sig = "Significant features", 
-                                         Comb = "Combined features")) %>% 
-            mutate(Feature_Set = factor(Feature_Set, 
-                                        levels = c("All features", 
-                                                   "Significant features", 
-                                                   "Combined features")))
+#-------------------------------------------------------------------------------
+# Overall accuracy 
+#-------------------------------------------------------------------------------
+# Adjust data 
+ResSummPlotDf <- ResSummDf %>% 
+                    fit_plot_data_loc()
+         
+# Plot overall accuracy
+SummPlotsLs[["A"]] <- RF_plot_accuracy(RF_res_main = ResSummPlotDf, 
+                                       x_col_name = "set", 
+                                       color_col = "Group") + 
+                              scale_color_manual(values = PlotColors) + 
+                              facet_grid(. ~ Type, 
+                                         scales = "free_x", 
+                                         space = "free_x") +
+                              ylim(c(25, 90)) + 
+                              theme(panel.grid.major.x = element_blank(), 
+                                    panel.grid.minor.x = element_blank(), 
+                                    axis.text.x = element_text(angle = 45))
 
+#-------------------------------------------------------------------------------
+# ROC curves 
+#-------------------------------------------------------------------------------
+# Adjust for plotting 
+# Adjust data 
+RocDataPlotDf <- RocDataDf %>% 
+                    fit_plot_data_loc() %>% 
+                    mutate(set_type = case_match(set_type, 
+                                                  "Metabol" ~ "Metabolites", 
+                                                  "Combs" ~ "Combined", 
+                                                  "Taxa" ~ "Taxa")) %>% 
+                    mutate(set_type = factor(set_type, unique(set_type)), 
+                           Type = factor(Type, c("Only significant", 
+                                                 "All features")))
 
-roc.comb.p <- ggplot(roc.df, aes(x = specificity, 
+# Plot ROC Curves 
+SummPlotsLs[["B"]] <- ggplot(RocDataPlotDf, 
+                             aes(x = specificity, 
                                  y = sensitivity, 
-                                 color = Data_set, alpha = AUC)) + 
-                        geom_line(aes(group = Data_set), size = 1) + 
+                                 color = set, 
+                                 alpha = AUC)) + 
+                        geom_line(aes(group = set), size = 1) + 
                         scale_x_reverse() + 
-                        facet_grid(~Feature_Set) + 
+                        facet_wrap(Type~set_type, ncol = 3) + 
                         geom_abline(intercept=1, 
                                     slope=1, 
                                     linetype="dashed") + 
@@ -579,60 +456,57 @@ roc.comb.p <- ggplot(roc.df, aes(x = specificity,
                               axis.text.x = element_text(angle = 90), 
                               legend.key.height = unit(0.3, 'cm'))
 
-ggsave(paste0(out.dir, "/roc_comb_plot.png"), 
-          roc.comb.p, 
-          width = roc.size[["w"]]*3, 
-          height = roc.size[["h"]])
-
 #-------------------------------------------------------------------------------
 # Significantly contributing plots 
-sig.plots.ls <- list()
+#-------------------------------------------------------------------------------
+ImpFlatLs <- unlist(ResImpPlotsLs, recursive = FALSE)
 
-sig.tax.df <- NULL
-
-for(i1.res in names(rf.res.ls$features)) {
+for(i in names(ImpFlatLs)) {
   
-  name.inst <- sub(".*?--", "", i1.res) %>% 
-               sub("--.*|_metab_all", "", .) 
+  ImpFlatLs[[i]] <- ImpFlatLs[[i]]$p + 
+                          theme(legend.position="none") + 
+                          scale_y_discrete(position = "right") + 
+                          theme(axis.text.x = element_text(angle = 90), 
+                                strip.text = element_text(size = 8))
   
-  sig.plots.ls[[name.inst]] <- rf.res.ls$features[[i1.res]]$plot_sig_topN$p + 
-                                theme(legend.position="none") + 
-                                scale_y_discrete(position = "right") + 
-                                theme(axis.text.x = element_text(angle = 90), 
-                                      strip.text = element_text(size = 8))
 }
 
-#-------------------------------------------------------------------------------
-# Combine plots into panel 
-# Features
-contr.plots <- plot_grid(sig.plots.ls$plasma,
-                         sig.plots.ls$ASV, 
-                         sig.plots.ls$fecal_FA, 
-                         sig.plots.ls$Genus, 
-                  ncol = 2, labels = c("C.1", "C.2", "C.3", "C.4"), 
-                  align = "v", axis = "lr", 
-                  vjust = 1, 
-                  scale = 0.925)
 
-contr.legend <- get_legend(rf.res.ls$features$`phen--Genus--CSS--0.25`$plot_sig_topN$p)
+#-------------------------------------------------------------------------------
+# Combine plots 
+#-------------------------------------------------------------------------------
+contr.plots <- plot_grid(ImpFlatLs$Metabol.plasma_metab_all,
+                         ImpFlatLs$`Taxa.ASV--CSS--0.25`, 
+                         ImpFlatLs$Metabol.fecal_FA, 
+                         ImpFlatLs$`Taxa.Genus--CSS--0.25`, 
+                         ncol = 2, labels = c("C.1", "C.2", "C.3", "C.4"), 
+                         align = "v", axis = "lr", 
+                         vjust = 1, 
+                         scale = 0.925)
+
+contr.legend <- get_legend(ResImpPlotsLs$Combs$`ASV&fecalFA`$p)
 
 contr.plots.l <- plot_grid(contr.plots, contr.legend, rel_widths = c(0.95, 0.05))
 
-
 # AUC and accuracy 
-auc.grid <- plot_grid(accu.p, roc.comb.p, 
+auc.grid <- plot_grid(SummPlotsLs$A, SummPlotsLs$B, 
                       labels = c("A", "B"), scale = 0.925, 
                       align = "hv", axis = "l")
 
 comb.plot <- plot_grid(auc.grid, contr.plots.l,
-              ncol = 1,
-              align = "v", axis = "l", rel_heights = c(0.35, 0.65))
+                       ncol = 1,
+                       align = "v", axis = "l", rel_heights = c(0.35, 0.65))
 
-save_plot(paste0(out.dir, "/comb_plot.png"), 
-          comb.plot, base_width = 14, 
+save_plot(paste0(DirOut, "/comb_plot.png"), 
+          comb.plot, base_width = 15, 
           base_height = 9)
 
-#-------------------------------------------------------------------------------
-save(list = c("rf.all.res.ls"),
-       file = "out/supp/RF.Rdata")
+# #-------------------------------------------------------------------------------
+# save(list = c("rf.all.res.ls"),
+#        file = "out/supp/RF.Rdata")
+# 
+# # Clean environment 
+# rm(list = ls())
+# gc()
+
 

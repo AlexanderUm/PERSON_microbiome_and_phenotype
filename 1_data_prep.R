@@ -11,7 +11,7 @@ set.seed(prm.ls[["General"]][["Seed"]])
 #-------------------------------------------------------------------------------
 source("R/phy_shorten_tax_names.R")
 source("R/phy_css_norm.R")
-
+source("R/phy_tmm_norm.R")
 
 #-------------------------------------------------------------------------------
 # Variables 
@@ -44,6 +44,12 @@ center.col <- prm.ls$General$Center_col
 
 antib.col <- prm.ls$General$Antib_col
 
+fib.col <- prm.ls$General$Fiber_col
+
+bss.col <- prm.ls$General$Bristol_col
+
+energy.col <- prm.ls$General$Energy_col
+
 id.col <- prm.ls$General$Part_id_col
 
 # Object to fill up 
@@ -71,7 +77,6 @@ ps <- prune_taxa(!is.na(tax_table(ps)[, "Phylum"])[, "Phylum"], ps)
 
 ps <- prune_taxa(tax_table(ps)[, "Kingdom"] %in% c("d__Bacteria", 
                                                    "d__Archaea"), ps)
-
 
 ################################################################################
 # Glom to higher taxonomic level ->
@@ -113,9 +118,10 @@ for(i.lvl in tax.lvls)  {
 
   ps.ls[[i.lvl]] <- list("Raw" = ps.inst, 
                          "Rare" = rarefy_even_depth(ps.inst, rngseed = 347), 
+                         "CSS" = phy_css_norm(ps.inst), 
+                         "TMM" = phy_TMMnorm(ps.inst),
                          "Relat" = transform_sample_counts(ps.inst, 
-                                                    function(x){x/sum(x)*100}),
-                         "CSS" = phy_css_norm(ps.inst))
+                                                    function(x){x/sum(x)*100}))
 }
 
 
@@ -136,27 +142,32 @@ picr.tax <-  as.matrix(rownames(picr.tab)) %>%
 
 ps.picr <- phyloseq(picr.otu, picr.tax)
 
-# Normolize count and Place into the same list as other phyloseqs
+# Normalize count and Place into the same list as other phyloseqs
 ps.ls[["Picrust"]] <- list("Raw" = ps.picr, 
                            "Rare" = rarefy_even_depth(ps.picr, rngseed = 347), 
+                           "CSS" = phy_css_norm(ps.picr), 
+                           "TMM" = phy_TMMnorm(ps.inst),
                            "Relat" = transform_sample_counts(ps.picr, 
-                                                   function(x){x/sum(x)*100}),
-                           "CSS" = phy_css_norm(ps.picr))
+                                                    function(x){x/sum(x)*100}))
 
 
 ################################################################################
 # Add full metadata 
 ################################################################################
+# Metabolites batch ID 
+metabol.batch.id <- read_csv(prm.ls$Paths$additional$metabol_batch_id) %>% 
+                      mutate(Batch = as.factor(Batch))
+
 # Metadata 
 phys.grid <- expand.grid(names(ps.ls), 
                          names(ps.ls[[1]]), 
                          stringsAsFactors = FALSE)
 
-for(i.meta.path in names(meta.paths)) {
+for(i in names(meta.paths)) { 
   
-  i.name <- gsub("meta_", "", i.meta.path)
+  i.name <- gsub("meta_", "", i)
   
-  meta <- read.csv(meta.paths[[i.meta.path]]) 
+  meta <- read.csv(meta.paths[[i]]) 
 
   rownames(meta) <- meta[[seq.id.col]]
   
@@ -165,11 +176,21 @@ for(i.meta.path in names(meta.paths)) {
   
   # Adjust metadata
   meta <- meta[over.samp, ] %>% 
-            mutate(!!gr.col := as.factor(.[[gr.col]]), 
-                   !!center.col := as.factor(.[[center.col]]), 
-                   !!sex.col := as.factor(.[[sex.col]]), 
-                   !!antib.col := as.factor(.[[antib.col]]))
+            mutate(!!gr.col := factor(.[[gr.col]], 
+                                      levels = c("No IR", "LIR", "MIR")), 
+                   !!center.col := replace(.data[[center.col]], 
+                                           .data[[center.col]] == "No IR", 
+                                           "UM")) %>%  
+            mutate(across(all_of(c(center.col, sex.col, antib.col)), as.factor)) %>% 
+            mutate(across(all_of(prm.ls$Data$z_tranform_col[[i]]), 
+                            function(x){as.numeric(gsub(",", ".", x))}), 
+                     across(all_of(prm.ls$Data$z_tranform_col[[i]]), 
+                            function(x){scale(x)[, 1]}, 
+                            .names = "z_{.col}")) %>% 
+            left_join(., metabol.batch.id, by = "ID") %>% 
+            droplevels()
   
+  rownames(meta) <- meta$SeqID
   
   data.ls[[i.name]][["meta"]] <- meta
   
@@ -198,7 +219,6 @@ for(i.meta.path in names(meta.paths)) {
   
 }
 
-
 ################################################################################
 # Metabolites table
 ################################################################################
@@ -215,6 +235,10 @@ for(i.metabol.path in names(metabol.paths)) {
   metabol.inst <- metabol.inst[, met.to.keep]
   
   metabol.inst[is.na(metabol.inst)] <- 0 
+  
+  # Fix column names 
+  colnames(metabol.inst) <- gsub("\\(|\\)|\\:|\\/| |\\-", "_", 
+                                 colnames(metabol.inst))
   
   data.ls[["Metabol"]][[i.metabol.path]] <- metabol.inst
   

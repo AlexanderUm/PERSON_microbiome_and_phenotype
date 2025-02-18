@@ -11,62 +11,61 @@ set.seed(prm.ls[["General"]][["Seed"]])
 # Load custom functions
 #-------------------------------------------------------------------------------
 source("R/phy_taxa_filter.R")
-source("R/phy_alpha.R")
-source("R/phy_dists_ls.R")
+source("R/phy_dist_ls.R")
 source("R/rda_extract_for_plot.R")
 source("R/plot_extracted_rda_data.R")
-
 
 #-------------------------------------------------------------------------------
 # Variables 
 #-------------------------------------------------------------------------------
-# Data sets to use
-ps.set <- prm.ls$Beta$data_set_ps
+MainVar <- prm.ls$Beta$main_var
 
-tax.lvls <- prm.ls$Beta$Tax_lvl
+CoVars <- prm.ls$Beta$fix_covar
 
-norms <- prm.ls$Beta$Norm
+TaxLvl <- prm.ls$Beta$Tax_lvl
 
-# Columns to use
-gr.col <- prm.ls$General$Group_col
+PhyNorm <- prm.ls$Beta$Norm
 
-id.col <- prm.ls$General$Part_id_col
+Nperm <- prm.ls$Beta$n_perm
 
-# beta parameters
-dists <- prm.ls$Beta$distances
+Dists <- prm.ls$Beta$distances
 
-n.perm <- prm.ls$Beta$n_perm
-
-db.form <- prm.ls$Beta$Formula
-
-out.path <- prm.ls$Beta$out_path
+OutDir <- prm.ls$Beta$out_path
 
 # Results object
 beta.res.ls <- list()
 
 
 ################################################################################
-# Run alpha diversity analysis
+# Run beta diversity analysis
 ################################################################################
-db.form.in <- paste0("dist.inst ~ ", db.form)
-
-for(i.set in ps.set) { 
+for(i in prm.ls$Beta$data_set_ps) { 
   
   # Extract data
-  ps.inst <- data.ls[[i.set]][["PS"]][[tax.lvls]][[norms]]
+  ps.inst <- data.ls[[i]][["PS"]][[TaxLvl]][[PhyNorm]]
   
-  meta.inst <- data.ls[[i.set]][["meta"]] 
+  meta.inst <- data.ls[[i]][["meta"]] %>% 
+                  select(all_of(c(CoVars[[i]], 
+                                  MainVar))) %>% 
+                  mutate(across(where(is.numeric), 
+                                function(x){replace(x, is.na(x), 
+                                                    median(x, na.rm = TRUE))}))
+  
+  # Formula for dbRDA
+  db.form.in <- paste0("dist.inst ~ ", 
+                       paste(CoVars[[i]], collapse = " + "), 
+                       " + ", MainVar)
   
   # Calculate distance 
-  dists.ls <- phy_dist_ls(phylo = ps.inst, dists = dists)
+  DistsLs <- phy_dist_ls(phylo = ps.inst, dists = Dists)
   
-  names(dists.ls) <- names(dists)
+  names(DistsLs) <- names(Dists)
   
   # Create folders 
-  dir.create(paste0(out.path, "/", i.set, "/tabs"), 
+  dir.create(paste0(OutDir, "/", i, "/tabs"), 
              recursive = TRUE, showWarnings = FALSE)
   
-  dir.create(paste0(out.path, "/", i.set, "/plots"), 
+  dir.create(paste0(OutDir, "/", i, "/plots"), 
              recursive = TRUE, showWarnings = FALSE)
   
   #-----------------------------------------------------------------------------
@@ -74,27 +73,27 @@ for(i.set in ps.set) {
   #-----------------------------------------------------------------------------
   res.adon.df <- NULL
   
-  for(i.dist in names(dists.ls)) {
+  for(j in names(DistsLs)) {
     
-      dist.inst <- dists.ls[[i.dist]]
+      dist.inst <- DistsLs[[j]]
     
       res.adon <- adonis2(formula = as.formula(db.form.in), 
                           data = meta.inst, 
                           by = "terms", 
-                          permutations = n.perm, 
+                          permutations = Nperm, 
                           parallel = 4) %>% 
                       tidy() %>% 
-                      mutate(Distance = i.dist,
-                             Data_set = i.set,
+                      mutate(Distance = j,
+                             Data_set = i,
                              Formula = db.form.in) 
       
       res.adon.df <- bind_rows(res.adon.df, res.adon)
       
-      beta.res.ls[[i.set]][["adonis2"]][[i.dist]] <- res.adon
+      beta.res.ls[[i]][["adonis2"]][[j]] <- res.adon
       
       write.csv(x = res.adon, 
-                file = paste0(out.path, "/", i.set, "/tabs", 
-                             "/adonis_", i.set, "_", i.dist, ".csv"))
+                file = paste0(OutDir, "/", i, "/tabs", 
+                             "/adonis_", i, "_", j, ".csv"))
   }
   
   
@@ -102,19 +101,19 @@ for(i.set in ps.set) {
   # Plot RDAs
   #-----------------------------------------------------------------------------
   # Extract data for plot
-  rda.p.df <- rda_extract_for_plot(dists_ls = dists.ls, 
+  rda.p.df <- rda_extract_for_plot(dists_ls = DistsLs, 
                                    metadata = meta.inst, 
-                                   form = db.form)
+                                   form = gsub(".*~", "", db.form.in))
   
   #-----------------------------------------------------------------------------
   # Add significance text data 
   #-----------------------------------------------------------------------------
-  term.plot <- gr.col
+  term.plot <- MainVar
   
-  for(i in names(rda.p.df)) {
+  for(j in names(rda.p.df)) {
     
     # Extract coordinates 
-    i.ax <- rda.p.df[[i]][["main"]]
+    i.ax <- rda.p.df[[j]][["main"]]
     
     x.text <- min(i.ax[[1]]) 
     
@@ -122,7 +121,7 @@ for(i.set in ps.set) {
     
     # Extract label text
     sig.text <- res.adon.df %>% 
-                  filter(Distance == i, term == term.plot) %>% 
+                  filter(Distance == j, term == term.plot) %>% 
                   mutate(R2_text = ifelse(round(R2, 3) == 0, 
                                           "R^2<0.001", 
                                           paste0("R^2==", 
@@ -133,13 +132,13 @@ for(i.set in ps.set) {
                                                  sprintf("%.3f", round(p.value, 3)))))
     
     # Combine into a data frame 
-    text.df <- data.frame("Distance" = i, 
-                       "x_coord" = as.numeric(x.text), 
-                       "y_coord" = as.numeric(y.text), 
-                       "lab_text" = paste0(sig.text[["p_text"]], 
-                                           "~~(", sig.text[["R2_text"]], ")"))
+    text.df <- data.frame("Distance" = j, 
+                           "x_coord" = as.numeric(x.text), 
+                           "y_coord" = as.numeric(y.text), 
+                           "lab_text" = paste0(sig.text[["p_text"]], 
+                                               "~~(", sig.text[["R2_text"]], ")"))
     
-    rda.p.df[[i]][["stat_lable"]] <- text.df
+    rda.p.df[[j]][["stat_lable"]] <- text.df
     
   }
   
@@ -148,17 +147,17 @@ for(i.set in ps.set) {
   # Plot RDAs
   #-----------------------------------------------------------------------------
   dbRDA.p.inst <- plot_extracted_rda_data(extracted_data = rda.p.df, 
-                                           group_col = gr.col, 
+                                           group_col = MainVar, 
                                            add_stat_text = TRUE, 
                                            sig_text_size = 3.1,
                                            add_elepses = TRUE, 
-                                           color_vec = aes.ls$col[[i.set]])
+                                           color_vec = aes.ls$col[[i]])
   
   
   #-----------------------------------------------------------------------------
   # Combine alpha and beta plots
   #-----------------------------------------------------------------------------
-  alpha.p <- alpha.res.ls[[i.set]][["plot"]] + 
+  alpha.p <- alpha.res.ls[[i]][["plot"]] + 
                   theme(legend.position="none")
   
   alpha.gr <- plot_grid(NULL, 
@@ -172,11 +171,11 @@ for(i.set in ps.set) {
                              dbRDA.p.inst$Comb, 
                              nrow = 1, 
                              rel_widths = c(0.01, 
-                                            0.2 + (length(levels(meta.inst[[gr.col]]))-2)*0.05, 
+                                            0.2 + (length(levels(meta.inst[[MainVar]]))-2)*0.05, 
                                             0.02, 0.725),
                              labels = c("A", "", "", "B"))
   
-  save_plot(paste0(out.path, "/", i.set, "/plots/", i.set, "_dbrda_beta.png"), 
+  save_plot(paste0(OutDir, "/", i, "/plots/", i, "_dbrda_beta.png"), 
             plot = plot(div.plot.comb), 
             base_width = 12, base_height = 7, units = "in", dpi = 600)
   

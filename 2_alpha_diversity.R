@@ -16,145 +16,147 @@ source("R/phy_alpha.R")
 # Variables 
 #-------------------------------------------------------------------------------
 # Data sets to use
-ps.set <- prm.ls$Alpha$data_set_ps
+SampleSet <- prm.ls$Alpha$data_set_ps
 
-tax.lvls <- prm.ls$Alpha$Tax_lvl
+TaxLvl <- prm.ls$Alpha$Tax_lvl
 
 norms <- prm.ls$Alpha$Norm
 
-# Columns to use
-gr.col <- prm.ls$General$Group_col
+AlphaCountTrans <- prm.ls$Alpha$measures_trans
 
-id.col <- prm.ls$General$Part_id_col
 
 # Alpha parameters
-alpha.ind <- prm.ls$Alpha$measures
-
-kw.alpha <- prm.ls$Alpha$alpha_cut_kw
+AlphaIndx <- prm.ls$Alpha$measures
 
 p.text.size <- 3.1
-
-out.dir <- prm.ls[["Alpha"]][["out_dir"]]
-
-# Results object
-alpha.res.ls <- list()
 
 
 ################################################################################
 # Run alpha diversity analysis
 ################################################################################
+alpha.res.ls <- list()
 
-for(i.set in ps.set) {
+StatResComb <- NULL
+
+FitRes <- NULL
+
+for(i in SampleSet) { 
   
   # Extract data
-  ps.inst <- data.ls[[i.set]][["PS"]][[tax.lvls]][[norms]]
+  PsInst <- data.ls[[i]][["PS"]][[TaxLvl]][[norms]]
   
-  meta.inst <- data.ls[[i.set]][["meta"]]
+  MetaInst <- data.ls[[i]][["meta"]]
   
   # Calculate alpha diversity
-  div.inst <- phy_alpha(ps.inst, measures = alpha.ind) %>% 
-                bind_cols(., meta.inst)
+  AlphaDfInst <- phy_alpha(PsInst, measures = AlphaIndx) %>% 
+                    bind_cols(., MetaInst)
+  
+  # Transform index count if specied 
+  if(!is.null(AlphaCountTrans)) {
+    
+    for(j in 1:length(AlphaCountTrans)) {
+      
+    AlphaDfInst <- AlphaDfInst %>% 
+                    mutate(across(AlphaCountTrans[[j]]$measures, 
+                                  AlphaCountTrans[[j]]$trans))
+    
+    }
+  
+  }
   
   # Elongate the diversity table 
-  alpha.long <- div.inst %>% 
-                  pivot_longer(cols = all_of(alpha.ind), names_to = "Index")
-  
+  AlphaDfLongInst <- AlphaDfInst %>% 
+                        pivot_longer(cols = all_of(AlphaIndx), 
+                                     names_to = "Index")
   
   # Create output directories
-  dir.create(paste0(out.dir, "/", i.set, "/tabs/"), 
+  dir.create(paste0(prm.ls$Alpha$out_dir, "/", i, "/tabs/"), 
              recursive = TRUE, showWarnings = FALSE)
   
-  dir.create(paste0(out.dir, "/", i.set, "/plots/"), 
+  dir.create(paste0(prm.ls$Alpha$out_dir, "/", i, "/plots/"), 
              recursive = TRUE, showWarnings = FALSE)
   
   
   #-----------------------------------------------------------------------------
   # Statistics 
   #-----------------------------------------------------------------------------
-  stat.res.comb <- NULL
+  FormLmm <- paste(c(prm.ls$Alpha$main_var, 
+                     prm.ls$Alpha$fix_covar[[i]], 
+                     paste0("(1|", prm.ls$Alpha$rand_vars[[i]], ")")), 
+                   collapse = " + ")
   
-  for(i.ind in alpha.ind) { 
-    
-    form.inst <- paste0(i.ind, "~", gr.col)
-    
-    # Wilcox test
-    if(length(levels(div.inst[[gr.col]])) == 2) {
+  StatResInst <- NULL
+ 
+  for(j in AlphaIndx) { 
       
-      res.test <- wilcox.test(as.formula(form.inst), div.inst) %>% 
-                    tidy() 
-    }
-    
-    # Kruskal-Wallis -> Dunn
-    if(length(levels(div.inst[[gr.col]])) > 2) {
+      FormInst <- paste0(j, " ~ ", FormLmm)
       
-      kw.res <- kruskal.test(as.formula(form.inst), div.inst) 
+      ResLmm <- lmerTest::lmer(as.formula(FormInst), AlphaDfInst)
       
-      res.test <- dunnTest(as.formula(form.inst), div.inst)$res  %>% 
-                      mutate(Test = "Dunn", 
-                             p.value = P.adj) %>% 
-                      add_row(Comparison = "Overall", 
-                              Test = "Kruskal-Wallis", 
-                              p.value = kw.res$p.value,
-                              .before = 1)
+      # Collect results
+      StatResInst <- broom.mixed::tidy(ResLmm) %>% 
+                          mutate(across(where(is.numeric), 
+                                        function(x){round(x, digits = 4)})) %>% 
+                          mutate(Set = i, 
+                                 Index = j, 
+                                 Formula = FormInst) %>% 
+                          bind_rows(StatResInst, .)
       
-    }
-    
-    stat.res.comb <- res.test %>% 
-                      mutate(Index = i.ind) %>% 
-                      rbind(stat.res.comb, .)
-    
-    write.csv(stat.res.comb, 
-              paste0(out.dir, "/", i.set, "/tabs/", "test_res.csv"), 
-              row.names = FALSE)
-    
+      # Assumptions data 
+      FitRes <- data.frame(Fitted = fitted(ResLmm), 
+                           Residuals = resid(ResLmm), 
+                           Set = i, 
+                           Index = j) %>% 
+                      bind_rows(FitRes, .)
   }
   
+  StatResComb <- bind_rows(StatResComb, StatResInst)
+    
+  write.csv(StatResInst, 
+            paste0(prm.ls$Alpha$out_dir, "/", i, "/tabs/", "test_res.csv"), 
+            row.names = FALSE)
   
   #-----------------------------------------------------------------------------
   # Plot results
   #-----------------------------------------------------------------------------
   # Base plot
-  p.base <- ggplot(alpha.long, 
-                      aes(y = value, x = .data[[gr.col]])) + 
-                    geom_jitter(aes(colour = .data[[gr.col]]), 
-                                height = 0, 
-                                width = 0.15, 
-                                alpha = 0.5) +
-                    geom_violin(fill = NA) + 
-                    facet_grid(c("Index"), scales = "free") + 
-                    theme_bw() + 
-                    theme(axis.line = element_line(color='black'),
-                          plot.background = element_blank(),
-                          panel.grid.major = element_blank(),
-                          panel.grid.minor = element_blank(), 
-                          axis.title.y = element_blank())
+  p.base <- ggplot(AlphaDfLongInst, 
+                   aes(y = value, x = .data[[prm.ls$Alpha$main_var]])) + 
+              geom_jitter(aes(colour = .data[[prm.ls$Alpha$main_var]]), 
+                          height = 0, 
+                          width = 0.15, 
+                          alpha = 0.5) +
+              geom_violin(fill = NA) + 
+              facet_grid(c("Index"), scales = "free") + 
+              theme_bw() + 
+              theme(axis.line = element_line(color='black'),
+                    plot.background = element_blank(),
+                    panel.grid.major = element_blank(),
+                    panel.grid.minor = element_blank(), 
+                    axis.title.y = element_blank())
   
   # Plot annotation dataframe
-  min.max.df <- alpha.long %>% 
-                  reframe(y.min = min(value), 
-                          y.max = max(value), 
-                          .by = Index)
+  min.max.df <- AlphaDfLongInst %>% 
+                    reframe(y.min = min(value), 
+                            y.max = max(value), 
+                            .by = Index)
   
-  res.inst <- stat.res.comb %>% 
-                    mutate(p.short = round(p.value, 3)) %>% 
-                    mutate(p.text = ifelse(p.short == 0, 
-                                           "P<0.001", 
-                                           paste0("P=", sprintf("%.3f", 
-                                                                p.short)))) %>% 
-                    left_join(., min.max.df, by = "Index")
+  SigDf <- StatResInst %>% 
+              filter(grepl(prm.ls$Alpha$main_var, term)) %>% 
+              mutate(p.short = round(p.value, 3), 
+                     End = gsub(prm.ls$Alpha$main_var, "", term), 
+                     Start = levels(MetaInst[[prm.ls$Alpha$main_var]])[1]) %>% 
+              mutate(p.text = ifelse(p.short == 0, 
+                                     "P<0.001", 
+                                     paste0("P=", sprintf("%.3f", 
+                                                          p.short)))) %>% 
+              left_join(., min.max.df, by = "Index") %>% 
+              mutate(y.sig = y.max + ((y.max - y.min)*(1:n()*0.35)),
+                     y.inv.point = y.max + ((y.max - y.min)*((n()+0.5)*0.35)), 
+                     .by = Index)
   
-  # Plot in correspondence with number of groups 
-  # If 2 groups add wilcoxon results 
-  if(length(levels(div.inst[[gr.col]])) == 2) {
-    
-    sig.df <- res.inst %>% 
-                mutate(Start = levels(meta.inst[[gr.col]])[1], 
-                       End = levels(meta.inst[[gr.col]])[2], 
-                       y.sig = y.max + (y.max - y.min) * 0.2, 
-                       y.inv.point = y.max + (y.max - y.min) * 0.4)
-    
-    p.final <- p.base +  
-                  geom_signif(data = sig.df,
+  FinalPlot <-  p.base +  
+                  geom_signif(data = SigDf,
                               aes(xmin = Start,
                                   xmax = End,
                                   annotations = p.text,
@@ -163,93 +165,58 @@ for(i.set in ps.set) {
                               vjust = -0.2,
                               manual = TRUE, 
                               margin_top = 1) + 
-                  geom_point(data = sig.df,
+                  geom_point(data = SigDf,
                              aes(x = End, 
                                  y = y.inv.point), 
                              x=NA) + 
-                  scale_color_manual(values = aes.ls$col[[i.set]])
-  }
-  
-  # More than two levels (Kruskal-Wallis)
-  if(length(levels(div.inst[[gr.col]])) > 2) {
-    
-    kw.anot <- res.inst %>% 
-                  filter(Test == "Kruskal-Wallis") %>% 
-                  mutate(Text = paste0(Test, ": ", p.text), 
-                         x.text = levels(meta.inst[[gr.col]])[1], 
-                         y.text = y.max + (y.max - y.min) * 0.25, 
-                         y.inv.point = y.max + (y.max - y.min) * 0.4)
-    
-    p.final <-  p.base + 
-                  geom_text(data = kw.anot, 
-                            aes(x = x.text, y = y.text, label = Text), 
-                            hjust = 0.1, 
-                            size = p.text.size) + 
-                  geom_point(data = sig.df,
-                             aes(x = x.text, 
-                                 y = y.inv.point), 
-                             x=NA) + 
-                  scale_color_manual(values = aes.ls$col[[i.set]])
-    
-    if(any(kw.anot[["p.value"]] <= kw.alpha)) {
-      
-      # Data frame for significance levels 
-      sig.df.dunn <- res.inst %>% 
-                      filter(Test == "Dunn", 
-                             p.value <= kw.alpha) %>% 
-                      mutate(Start = str_split(.$Comparison, 
-                                               " - ", simplify = TRUE)[, 1], 
-                             End = str_split(.$Comparison, 
-                                             " - ", simplify = TRUE)[, 2]) %>% 
-                      group_by(Index) %>% 
-                      mutate(y.sig = y.max + ((y.max - y.min)*(1:n()*0.35))) %>% 
-                      mutate(y.inv.point = y.max + ((y.max - y.min)*((n()+2)*0.35)), 
-                             y.text = y.max + ((y.max - y.min)*((n()+1)*0.45))) %>% 
-                      ungroup()
-      
-      # Adjust y text location taking into account significance bars 
-      kw.anot <- left_join(kw.anot, sig.df.dunn[c("Index", "y.text")], 
-                           by = "Index", 
-                           multiple = "first") %>% 
-                    mutate(y.text = ifelse(is.na(y.text.y), 
-                                           y.text.x, 
-                                           y.text.y))
-      
-      # Final plot 
-      p.final <- p.base +  
-                  geom_text(data = kw.anot, 
-                            aes(x = x.text, y = y.text, label = Text), 
-                            hjust = 0.1, 
-                            size = p.text.size) +
-                  geom_signif(data = sig.df.dunn,
-                              aes(xmin = Start,
-                                  xmax = End,
-                                  annotations = p.text,
-                                  y_position = y.sig),
-                              textsize = p.text.size, 
-                              vjust = -0.2,
-                              manual = TRUE, 
-                              margin_top = 1) + 
-                  geom_point(data = sig.df.dunn,
-                             aes(x = End, 
-                                 y = y.inv.point), 
-                             x=NA) + 
-                  scale_color_manual(values = aes.ls$col[[i.set]])
-    } }
-  
-  alpha.res.ls[[i.set]][["plot"]] <- p.final
-  
-  alpha.res.ls[[i.set]][["res"]] <- stat.res.comb
-  
+                  scale_color_manual(values = aes.ls$col[[i]])
+                
   # Save plot 
-  ggsave(filename = paste0(out.dir, "/", i.set, "/plots/alpha.png"), 
-         plot = p.final, 
-         width = length(levels(div.inst[[gr.col]]))*1.75 + 1.5, 
-         height = length(alpha.ind)*2 + 0.25, 
+  ggsave(filename = paste0(prm.ls$Alpha$out_dir, "/", i, "/plots/alpha.png"), 
+         plot = FinalPlot, 
+         width = length(levels(AlphaDfInst[[prm.ls$Alpha$main_var]]))*1 + 1.5, 
+         height = length(AlphaIndx)*2 + 0.25, 
          dpi = 600)
   
+  # Write out results 
+  alpha.res.ls[[i]][["plot"]] <- FinalPlot
+  
+  alpha.res.ls[[i]][["res"]] <- StatResInst
+    
 }
+ 
 
+#-------------------------------------------------------------------------------
+# Visualize models assumptions
+#-------------------------------------------------------------------------------
+FitResPlot <- ggplot(FitRes, aes(y = Residuals, x = Fitted)) + 
+                geom_point(color = "steelblue", alpha = 0.5) + 
+                geom_abline(intercept = 0, slope = 0) + 
+                facet_wrap(c("Set", "Index"), 
+                           scales = "free", 
+                           ncol = 4) + 
+                theme_bw() 
+
+ggsave(plot = FitResPlot, 
+       filename = paste0(prm.ls$Alpha$out_dir, 
+                         "/Full_Fitted_vs_Residual.png"), 
+       width = 12, 
+       height = 9) 
+
+
+QqResPlot <- ggplot(FitRes, aes(sample = Residuals)) + 
+                stat_qq(color = "steelblue", alpha = 0.5) + 
+                stat_qq_line() + 
+                facet_wrap(c("Set", "Index"), 
+                           scales = "free", 
+                           ncol = 4) + 
+                theme_bw()
+
+ggsave(plot = QqResPlot, 
+       filename = paste0(prm.ls$Alpha$out_dir, 
+                         "/Full_QQ_Residual.png"), 
+       width = 12, 
+       height = 9)
 
 #-------------------------------------------------------------------------------
 save(list = c("alpha.res.ls"), 
@@ -258,4 +225,3 @@ save(list = c("alpha.res.ls"),
 # Clean environment
 rm(list = ls())
 gc()
-
