@@ -2,7 +2,7 @@
 .RData 
 .Rhistory 
 .Rproj.user/ 
-*.Rproj
+# *.Rproj
 .RDataTmp
 
 # Rendered reports 
