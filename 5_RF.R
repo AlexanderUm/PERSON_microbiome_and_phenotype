@@ -191,7 +191,8 @@ for(i in 1:nrow(RfDataPrmDf)) {
                             Mtry_auto_tune = RfAutoTuneMtry,
                             n_trees = RfNtrees,
                             gr_size_prop = RfGrSizeBalance,
-                            n_perm = RfNprem)
+                            n_perm = RfNprem, 
+                            set_seed = prm.ls$General$Seed)
   
   # Collect data 
   RfResLs[["AllFeat"]][[iPrm[["set_type"]]]][[iPrm[["set"]]]] <- iRfResAll
@@ -214,7 +215,8 @@ for(i in 1:nrow(RfDataPrmDf)) {
                                 Mtry_auto_tune = RfAutoTuneMtry,
                                 n_trees = RfNtrees,
                                 gr_size_prop = RfGrSizeBalance,
-                                n_perm = RfNprem)
+                                n_perm = RfNprem, 
+                                set_seed = prm.ls$General$Seed)
   
   # Collect data 
   RfResLs[["SigFeat"]][[iPrm[["set_type"]]]][[iPrm[["set"]]]] <- iRfResSig
@@ -251,7 +253,8 @@ for(i in names(CombSets)) {
                                Mtry_auto_tune = RfAutoTuneMtry,
                                n_trees = RfNtrees,
                                gr_size_prop = RfGrSizeBalance,
-                               n_perm = RfNprem)
+                               n_perm = RfNprem, 
+                               set_seed = prm.ls$General$Seed)
   
   # Collect data 
   RfResLs[["SigFeat"]][["Combs"]][[i]] <- iRfResComb
