@@ -21,7 +21,7 @@ sig_text <- function(col, n_dig, pref) {
   
   ColRound <- round(col, n_dig)
   
-  TextIfLess <- paste0(pref, "<", 
+  TextIfLess <- paste0(pref, "<0.", 
                        paste(replicate((n_dig-1), "0"), 
                              collapse = ""), "1")
   
