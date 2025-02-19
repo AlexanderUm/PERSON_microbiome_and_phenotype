@@ -96,7 +96,8 @@ RF_run_with_par <- function(data_in,
                             n_perm, 
                             gr_size_prop = NA,
                             Mtry_auto_tune = FALSE,
-                            n_cores = 4) {
+                            n_cores = 4, 
+                            set_seed = NULL) {
   
   require(pROC)
   require(rfPermute)
@@ -126,9 +127,12 @@ RF_run_with_par <- function(data_in,
     SampSizeRf <- balancedSampsize(data_in[[group_col]],
                                    pct = gr_size_prop)
     
-    #-----------------------------------------------------------------------------
+    #---------------------------------------------------------------------------
     # Run RF per for original and group column permuted data sets
-    #-----------------------------------------------------------------------------
+    #---------------------------------------------------------------------------
+    # Set seed if specified 
+    if(!is.null(set_seed)) { set.seed(set_seed) }
+    
     RfRes <- rfPermute(RF_formula,
                        data = data_in,
                        ntree = n_trees,
